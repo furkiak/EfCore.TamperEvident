@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <Title>Zero-Trust Audit Logging for EF Core</Title>
+    <Authors>Furkan Akca</Authors>
+    <PackageTags>efcore, audit, log, security, tamper-evident, blockchain, zero-trust</PackageTags>
+    <Description>A tamper-evident, zero-trust audit logging library for Entity Framework Core. It utilizes blockchain-like hash chains to completely prevent data manipulation and recalculation attacks, even by Database Administrators (DBAs).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.16" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.16" />
+    <PackageReference Include="System.Text.Json" Version="9.0.16" />
+  </ItemGroup>
+
+</Project>
