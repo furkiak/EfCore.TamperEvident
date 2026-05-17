@@ -2,7 +2,7 @@
 
 ![NuGet Version](https://img.shields.io/badge/nuget-v1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![EF Core](https://img.shields.io/badge/EF_Core-6.0%20%7C%208.0-purple)
+![EF Core](https://img.shields.io/badge/EF_Core-6.0%20%7C%2010.0-purple)
 
 Enterprise-grade **tamper-evident audit logging** for Entity Framework Core.
 
