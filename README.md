@@ -20,13 +20,8 @@ Designed for systems requiring **compliance, forensic traceability, and high-int
 
 ## ✨ Key Features
 
-<<<<<<< HEAD
 ### 🔐 Cryptographic HMAC Hash Chain
 Each audit record is cryptographically linked to the previous entry using **HMAC-SHA256 hashing** and a secure secret key, creating an immutable audit sequence.
-=======
-### 🔐 Cryptographic Hash Chain
-Each audit record is cryptographically linked to the previous entry using **SHA-256 hashing**, creating an immutable audit sequence.
->>>>>>> 03abf967b5b5be9197d9b36199603ec5989009ae
 
 Any modification, deletion, or insertion into historical records immediately breaks chain integrity.
 
@@ -37,11 +32,7 @@ Protects against **database history rewriting attacks**.
 
 The library periodically generates a **Root Hash (Anchor)** and sends it to an external secure email address. Even if a DBA recalculates hashes and rewrites history inside the database, integrity verification will fail when compared with externally stored anchors.
 
-<<<<<<< HEAD
 Furthermore, attackers cannot regenerate valid hashes without the Application's internal `HmacSecretKey`, completely preventing DBA-level forgery.
-
-=======
->>>>>>> 03abf967b5b5be9197d9b36199603ec5989009ae
 ---
 
 ### ⚡ Concurrency-Safe Chain Generation
@@ -69,16 +60,12 @@ Eliminates hash inconsistencies caused by unpredictable property ordering during
 
 Ensures **stable, repeatable cryptographic hashes** across environments.
 
-<<<<<<< HEAD
 **JSON Diff Profiling:** Only the `Modified` properties (changing from original to new value) are serialized into the audit logs, drastically reducing database storage bloat for large entities.
 
 ---
 
 ### 🗑 Intelligent Soft-Delete Detection
 If you use logical deletions (`IsDeleted = true`), the library will automatically detect it and mark the row as `SoftDelete` instead of treating it as a standard data `Update`. This provides deeper insights into your evidence analytics.
-
-=======
->>>>>>> 03abf967b5b5be9197d9b36199603ec5989009ae
 ---
 
 ## 📦 Installation
@@ -162,13 +149,9 @@ builder.Services.AddDbContext<MyCrmDbContext>(options =>
         audit.SmtpUser = "security-bot@company.com";
         audit.SmtpPassword = "your-secure-password";
 
-<<<<<<< HEAD
         // Secret keys for cryptographic strength
         audit.HmacSecretKey = "Your_Very_Strong_App_Secret_Key_Here";
         audit.SoftDeleteColumnName = "IsDeleted"; // Customize soft-delete column
-
-=======
->>>>>>> 03abf967b5b5be9197d9b36199603ec5989009ae
         audit.AnchorEmailTo =
             "compliance-officer@company.com";
     });
@@ -207,7 +190,6 @@ Audit logs are generated automatically.
 If tampering is suspected, use the `AuditVerifier` to validate audit integrity.
 
 ```csharp
-<<<<<<< HEAD
 using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Services;
 
@@ -219,12 +201,6 @@ var options = new TamperEvidentOptions
 
 // Inject your DbContext and pass the options
 var verifier = new AuditVerifier(_context, options);
-=======
-using EfCore.TamperEvident.Services;
-
-// Inject your DbContext
-var verifier = new AuditVerifier(_context);
->>>>>>> 03abf967b5b5be9197d9b36199603ec5989009ae
 
 // Optional:
 // Anchor hashes received externally (email)
