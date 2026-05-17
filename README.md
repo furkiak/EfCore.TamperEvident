@@ -10,6 +10,12 @@ Enterprise-grade **tamper-evident audit logging** for Entity Framework Core.
 
 Designed for systems requiring **compliance, forensic traceability, and high-integrity audit logging**.
 
+
+<p align="center">
+  <img src="https://github.com/furkiak/EfCore.TamperEvident/blob/main/image.jpg" width="600" title="Tamper Evident">
+</p>
+
+
 ---
 
 ## ✨ Key Features
