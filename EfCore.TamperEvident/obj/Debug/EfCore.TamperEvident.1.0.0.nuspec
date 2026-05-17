@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>EfCore.TamperEvident</id>
+    <version>1.0.0</version>
+    <title>Zero-Trust Audit Logging for EF Core</title>
+    <authors>Furkan Akca</authors>
+    <description>A tamper-evident, zero-trust audit logging library for Entity Framework Core. It utilizes blockchain-like hash chains to completely prevent data manipulation and recalculation attacks, even by Database Administrators (DBAs).</description>
+    <tags>efcore, audit, log, security, tamper-evident, blockchain, zero-trust</tags>
+    <repository type="git" commit="7a2241acb86c98d42b1bfb8085811118fdc03e36" />
+    <dependencies>
+      <group targetFramework="net9.0">
+        <dependency id="Microsoft.EntityFrameworkCore" version="9.0.16" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.EntityFrameworkCore.Relational" version="9.0.16" exclude="Build,Analyzers" />
+        <dependency id="System.Text.Json" version="9.0.16" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="C:\Users\DesktopPc\Desktop\Temper\EfCore.TamperEvident\EfCore.TamperEvident\bin\Debug\net9.0\EfCore.TamperEvident.dll" target="lib\net9.0\EfCore.TamperEvident.dll" />
+  </files>
+</package>

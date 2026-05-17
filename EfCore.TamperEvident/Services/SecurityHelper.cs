@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -9,16 +9,16 @@ namespace EfCore.TamperEvident.Services
 {
     public static class SecurityHelper
     { 
-        public static string GetLockQuery(DatabaseProvider provider, string tableName)
+        public static string GetLockQuery(DatabaseProvider provider)
         {
             return provider switch
             {
-                DatabaseProvider.SqlServer => $"SELECT * FROM AuditChainStates WITH (UPDLOCK, ROWLOCK) WHERE TableName = '{tableName}'",
-                DatabaseProvider.PostgreSql => $"SELECT * FROM \"AuditChainStates\" WHERE \"TableName\" = '{tableName}' FOR UPDATE",
-                DatabaseProvider.MySql => $"SELECT * FROM AuditChainStates WHERE TableName = '{tableName}' FOR UPDATE",
+                DatabaseProvider.SqlServer => "SELECT * FROM AuditChainStates WITH (UPDLOCK, ROWLOCK) WHERE TableName = {0}",
+                DatabaseProvider.PostgreSql => "SELECT * FROM \"AuditChainStates\" WHERE \"TableName\" = {0} FOR UPDATE",
+                DatabaseProvider.MySql => "SELECT * FROM AuditChainStates WHERE TableName = {0} FOR UPDATE",
                 _ => throw new NotSupportedException("Unsupported database provider")
             };
-        } 
+        }
         public static string SerializeDeterministic(object obj)
         {
             if (obj == null) return null;
@@ -27,11 +27,12 @@ namespace EfCore.TamperEvident.Services
             var sortedDict = new SortedDictionary<string, object>(dictionary);
             return JsonSerializer.Serialize(sortedDict);
         } 
-        public static string ComputeHash(string rawData)
+        public static string ComputeHash(string rawData, string secretKey)
         {
-            using (SHA256 sha = SHA256.Create())
+            var keyBytes = Encoding.UTF8.GetBytes(secretKey ?? string.Empty);
+            using (var hmac = new HMACSHA256(keyBytes))
             {
-                byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawData));
+                byte[] bytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(rawData));
                 StringBuilder sb = new StringBuilder();
                 foreach (byte b in bytes)
                 {

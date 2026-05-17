@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -9,33 +9,34 @@ namespace EfCore.TamperEvident.Services
     public class AuditVerifier
     {
         private readonly DbContext _context;
+        private readonly EfCore.TamperEvident.Configuration.TamperEvidentOptions _options;
 
-        public AuditVerifier(DbContext context)
+        public AuditVerifier(DbContext context, EfCore.TamperEvident.Configuration.TamperEvidentOptions options)
         {
             _context = context;
+            _options = options ?? new EfCore.TamperEvident.Configuration.TamperEvidentOptions();
         }
 
         public async Task<(bool IsValid, string Message)> VerifyTableIntegrityAsync(string tableName, List<string> providedAnchorKeys = null)
         {
-            var logs = await _context.Set<AuditLog>()
+            var logsQuery = _context.Set<AuditLog>()
                 .AsNoTracking()
                 .Where(x => x.TableName == tableName)
-                .OrderBy(x => x.TimestampTicks)
-                .ToListAsync();
+                .OrderBy(x => x.TimestampTicks);
 
-            if (!logs.Any())
+            if (!await logsQuery.AnyAsync())
                 return (true, "No audit logs found for the specified table.");
 
             string expectedPreviousHash = "GENESIS";
             int matchedAnchors = 0;
 
-            foreach (var log in logs)
+            await foreach (var log in logsQuery.AsAsyncEnumerable())
             { 
                 if (log.PreviousHash != expectedPreviousHash)
                     return (false, $"CHAIN BROKEN! Tampering detected at record ID: {log.Id}. The previous hash does not match.");
                  
                 string rawData = $"{log.PreviousHash}{log.TableName}{log.RecordId}{log.ActionType}{log.OldValues}{log.NewValues}{log.TimestampTicks}";
-                string recalculatedHash = SecurityHelper.ComputeHash(rawData);
+                string recalculatedHash = SecurityHelper.ComputeHash(rawData, _options.HmacSecretKey);
 
                 if (recalculatedHash != log.CurrentHash)
                     return (false, $"DATA MANIPULATION DETECTED! The payload of record ID: {log.Id} has been externally modified.");

@@ -1,4 +1,9 @@
-﻿namespace EfCore.TamperEvident.Configuration
+using System;
+using System.Collections.Generic;
+using EfCore.TamperEvident.Services;
+using Microsoft.Extensions.Logging;
+
+namespace EfCore.TamperEvident.Configuration
 {
     [Flags]
     public enum AuditOperation
@@ -19,6 +24,12 @@
 
     public class TamperEvidentOptions
     {
+        public string HmacSecretKey { get; set; } = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT";
+        public string SoftDeleteColumnName { get; set; } = "IsDeleted";
+        
+        public IAnchorPublisher CustomAnchorPublisher { get; set; }
+        public ILoggerFactory LoggerFactory { get; set; }
+
         public DatabaseProvider DbProvider { get; set; } = DatabaseProvider.SqlServer;
         public AuditOperation TrackedOperations { get; set; } = AuditOperation.All;
         public List<string> ExcludedTables { get; set; } = new List<string>();

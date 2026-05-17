@@ -1,9 +1,11 @@
-﻿using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Models;
 using EfCore.TamperEvident.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
 
 namespace EfCore.TamperEvident.Interceptors
@@ -19,19 +21,17 @@ namespace EfCore.TamperEvident.Interceptors
     {
         public Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry Entry { get; set; }
         public string TableName { get; set; }
-        public EntityState Action { get; set; }
+        public string Action { get; set; }
         public string OldValues { get; set; }
         public string NewValues { get; set; }
     }
     public class TamperEvidentInterceptor : SaveChangesInterceptor
     {
         private readonly TamperEvidentOptions _options;
-        private readonly AnchorService _anchorService;
         private static readonly ConditionalWeakTable<DbContext, AuditContextState> _stateMap = new();
         public TamperEvidentInterceptor(TamperEvidentOptions options)
         {
             _options = options;
-            _anchorService = new AnchorService(options);
         }
         public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
             DbContextEventData eventData, InterceptionResult<int> result, CancellationToken ct = default)
@@ -69,13 +69,52 @@ namespace EfCore.TamperEvident.Interceptors
                 if (entry.State == EntityState.Modified && !_options.TrackedOperations.HasFlag(AuditOperation.Update)) continue;
                 if (entry.State == EntityState.Deleted && !_options.TrackedOperations.HasFlag(AuditOperation.Delete)) continue;
 
+                bool isSoftDelete = false;
+                string oldJson = null;
+                string newJson = null;
+
+                if (entry.State == EntityState.Added)
+                {
+                    newJson = SecurityHelper.SerializeDeterministic(entry.CurrentValues.ToObject());
+                }
+                else if (entry.State == EntityState.Deleted)
+                {
+                    oldJson = SecurityHelper.SerializeDeterministic(entry.OriginalValues.ToObject());
+                }
+                else if (entry.State == EntityState.Modified)
+                {
+                    var oldValuesDict = new System.Collections.Generic.Dictionary<string, object>();
+                    var newValuesDict = new System.Collections.Generic.Dictionary<string, object>();
+
+                    foreach (var prop in entry.Properties)
+                    {
+                        if (prop.IsModified)
+                        {
+                            oldValuesDict[prop.Metadata.Name] = prop.OriginalValue;
+                            newValuesDict[prop.Metadata.Name] = prop.CurrentValue;
+
+                            if (prop.Metadata.Name == _options.SoftDeleteColumnName)
+                            {
+                                if (prop.OriginalValue is bool oldVal && oldVal == false &&
+                                    prop.CurrentValue is bool newVal && newVal == true)
+                                {
+                                    isSoftDelete = true;
+                                }
+                            }
+                        }
+                    }
+
+                    oldJson = SecurityHelper.SerializeDeterministic(oldValuesDict);
+                    newJson = SecurityHelper.SerializeDeterministic(newValuesDict);
+                }
+
                 state.Preps.Add(new AuditEntryPrep
                 {
                     Entry = entry,
                     TableName = tableName,
-                    Action = entry.State,
-                    OldValues = entry.State == EntityState.Added ? null : SecurityHelper.SerializeDeterministic(entry.OriginalValues.ToObject()),
-                    NewValues = entry.State == EntityState.Deleted ? null : SecurityHelper.SerializeDeterministic(entry.CurrentValues.ToObject())
+                    Action = isSoftDelete ? "SoftDelete" : entry.State.ToString(),
+                    OldValues = oldJson,
+                    NewValues = newJson
                 });
             }
 
@@ -99,8 +138,8 @@ namespace EfCore.TamperEvident.Interceptors
 
                 string primaryKey = prep.Entry.Properties.FirstOrDefault(x => x.Metadata.IsPrimaryKey())?.CurrentValue?.ToString() ?? "N/A";
 
-                string lockQuery = SecurityHelper.GetLockQuery(_options.DbProvider, prep.TableName);
-                var chainState = await context.Set<AuditChainState>().FromSqlRaw(lockQuery).FirstOrDefaultAsync(ct);
+                string lockQuery = SecurityHelper.GetLockQuery(_options.DbProvider);
+                var chainState = await context.Set<AuditChainState>().FromSqlRaw(lockQuery, prep.TableName).FirstOrDefaultAsync(ct);
 
                 if (chainState == null)
                 {
@@ -110,13 +149,13 @@ namespace EfCore.TamperEvident.Interceptors
 
                 long timeTicks = DateTime.UtcNow.Ticks;
                 string rawData = $"{chainState.LastHash}{prep.TableName}{primaryKey}{prep.Action}{prep.OldValues}{prep.NewValues}{timeTicks}";
-                string currentHash = SecurityHelper.ComputeHash(rawData);
+                string currentHash = SecurityHelper.ComputeHash(rawData, _options.HmacSecretKey);
 
                 var auditLog = new AuditLog
                 {
                     TableName = prep.TableName,
                     RecordId = primaryKey,
-                    ActionType = prep.Action.ToString(),
+                    ActionType = prep.Action,
                     OldValues = prep.OldValues,
                     NewValues = prep.NewValues,
                     TimestampTicks = timeTicks,
@@ -132,7 +171,10 @@ namespace EfCore.TamperEvident.Interceptors
                 chainState.LastModified = DateTime.UtcNow;
 
                 if (chainState.UnanchoredCount >= _options.AnchorThreshold)
+                {
                     tablesToAnchor[prep.TableName] = chainState;
+                    chainState.UnanchoredCount = 0;
+                }
             }
 
 
@@ -146,7 +188,22 @@ namespace EfCore.TamperEvident.Interceptors
 
 
             if (tablesToAnchor.Any())
-                _ = Task.Run(() => SendAnchorsAsync(tablesToAnchor.Values.ToList()));
+            {
+                var logger = _options.LoggerFactory?.CreateLogger<TamperEvidentInterceptor>() 
+                             ?? context.GetService<ILoggerFactory>()?.CreateLogger<TamperEvidentInterceptor>();
+                             
+                _ = Task.Run(async () => 
+                {
+                    try
+                    {
+                        await SendAnchorsAsync(tablesToAnchor.Values.ToList());
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogError(ex, "Failed to send anchors.");
+                    }
+                });
+            }
 
             return result;
         }
@@ -168,9 +225,10 @@ namespace EfCore.TamperEvident.Interceptors
 
         private async Task SendAnchorsAsync(List<AuditChainState> states)
         {
+            var publisher = _options.CustomAnchorPublisher ?? new SmtpAnchorPublisher(_options, _options.LoggerFactory);
             foreach (var state in states)
             {
-                await _anchorService.SendAnchorEmailAsync(state.TableName, state.LastHash, state.UnanchoredCount);
+                await publisher.SendAnchorAsync(state.TableName, state.LastHash, state.UnanchoredCount);
             }
         }
     }
