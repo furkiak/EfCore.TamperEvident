@@ -9,6 +9,7 @@
     <Authors>Furkan Akca</Authors>
     <PackageTags>efcore, audit, log, security, tamper-evident, blockchain, zero-trust</PackageTags>
     <Description>A tamper-evident, zero-trust audit logging library for Entity Framework Core. It utilizes blockchain-like hash chains to completely prevent data manipulation and recalculation attacks, even by Database Administrators (DBAs).</Description>
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
