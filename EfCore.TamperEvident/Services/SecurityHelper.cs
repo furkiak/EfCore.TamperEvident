@@ -19,15 +19,15 @@ namespace EfCore.TamperEvident.Services
                 _ => throw new NotSupportedException("Unsupported database provider")
             };
         }
-        public static string SerializeDeterministic(object obj)
+        public static string? SerializeDeterministic(object? obj)
         {
             if (obj == null) return null;
 
-            var dictionary = JsonSerializer.Deserialize<Dictionary<string, object>>(JsonSerializer.Serialize(obj));
-            var sortedDict = new SortedDictionary<string, object>(dictionary);
+            var dictionary = JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(obj));
+            var sortedDict = new SortedDictionary<string, object?>(dictionary ?? new Dictionary<string, object?>());
             return JsonSerializer.Serialize(sortedDict);
         } 
-        public static string ComputeHash(string rawData, string secretKey)
+        public static string ComputeHash(string rawData, string? secretKey)
         {
             var keyBytes = Encoding.UTF8.GetBytes(secretKey ?? string.Empty);
             using (var hmac = new HMACSHA256(keyBytes))

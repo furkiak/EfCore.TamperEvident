@@ -17,7 +17,7 @@ namespace EfCore.TamperEvident.Services
             _options = options ?? new EfCore.TamperEvident.Configuration.TamperEvidentOptions();
         }
 
-        public async Task<(bool IsValid, string Message)> VerifyTableIntegrityAsync(string tableName, List<string> providedAnchorKeys = null)
+        public async Task<(bool IsValid, string Message)> VerifyTableIntegrityAsync(string tableName, List<string>? providedAnchorKeys = null)
         {
             var logsQuery = _context.Set<AuditLog>()
                 .AsNoTracking()

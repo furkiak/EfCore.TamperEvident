@@ -10,9 +10,9 @@ namespace EfCore.TamperEvident.Services
     public class SmtpAnchorPublisher : IAnchorPublisher
     {
         private readonly TamperEvidentOptions _options;
-        private readonly ILogger<SmtpAnchorPublisher> _logger;
+        private readonly ILogger<SmtpAnchorPublisher>? _logger;
 
-        public SmtpAnchorPublisher(TamperEvidentOptions options, ILoggerFactory loggerFactory = null)
+        public SmtpAnchorPublisher(TamperEvidentOptions options, ILoggerFactory? loggerFactory = null)
         {
             _options = options;
             _logger = loggerFactory?.CreateLogger<SmtpAnchorPublisher>();
@@ -20,9 +20,9 @@ namespace EfCore.TamperEvident.Services
 
         public async Task SendAnchorAsync(string tableName, string currentHash, int recordCount)
         {
-            if (string.IsNullOrEmpty(_options.SmtpHost) || string.IsNullOrEmpty(_options.AnchorEmailTo))
+            if (string.IsNullOrEmpty(_options.SmtpHost) || string.IsNullOrEmpty(_options.AnchorEmailTo) || string.IsNullOrEmpty(_options.SmtpUser))
             {
-                _logger?.LogWarning("SMTP Host or AnchorEmailTo is not configured. Anchor will not be sent.");
+                _logger?.LogWarning("SMTP Host, User, or AnchorEmailTo is not configured. Anchor will not be sent.");
                 return;
             }
 

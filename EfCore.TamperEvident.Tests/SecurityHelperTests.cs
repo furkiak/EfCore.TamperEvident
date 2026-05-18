@@ -55,8 +55,8 @@ namespace EfCore.TamperEvident.Tests
             };
 
             // Act
-            string json1 = SecurityHelper.SerializeDeterministic(dict1);
-            string json2 = SecurityHelper.SerializeDeterministic(dict2);
+            var json1 = SecurityHelper.SerializeDeterministic(dict1);
+            var json2 = SecurityHelper.SerializeDeterministic(dict2);
 
             // Assert
             Assert.Equal(json1, json2);

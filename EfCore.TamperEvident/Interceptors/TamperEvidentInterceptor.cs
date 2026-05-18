@@ -12,18 +12,18 @@ namespace EfCore.TamperEvident.Interceptors
 {
     internal class AuditContextState
     {
-        public IDbContextTransaction Transaction { get; set; }
+        public IDbContextTransaction? Transaction { get; set; }
         public bool IsTransactionOwner { get; set; }
         public bool IsSavingLogs { get; set; }
         public List<AuditEntryPrep> Preps { get; set; } = new();
     }
     internal class AuditEntryPrep
     {
-        public Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry Entry { get; set; }
-        public string TableName { get; set; }
-        public string Action { get; set; }
-        public string OldValues { get; set; }
-        public string NewValues { get; set; }
+        public required Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry Entry { get; set; }
+        public required string TableName { get; set; }
+        public required string Action { get; set; }
+        public string? OldValues { get; set; }
+        public string? NewValues { get; set; }
     }
     public class TamperEvidentInterceptor : SaveChangesInterceptor
     {
@@ -61,7 +61,8 @@ namespace EfCore.TamperEvident.Interceptors
 
             foreach (var entry in entries)
             {
-                string tableName = entry.Metadata.GetTableName();
+                string? tableName = entry.Metadata.GetTableName();
+                if (string.IsNullOrEmpty(tableName)) continue;
                 if (tableName == "AuditLogs" || tableName == "AuditChainStates") continue;
                 if (_options.ExcludedTables.Contains(tableName)) continue;
 
@@ -70,8 +71,8 @@ namespace EfCore.TamperEvident.Interceptors
                 if (entry.State == EntityState.Deleted && !_options.TrackedOperations.HasFlag(AuditOperation.Delete)) continue;
 
                 bool isSoftDelete = false;
-                string oldJson = null;
-                string newJson = null;
+                string? oldJson = null;
+                string? newJson = null;
 
                 if (entry.State == EntityState.Added)
                 {
@@ -83,8 +84,8 @@ namespace EfCore.TamperEvident.Interceptors
                 }
                 else if (entry.State == EntityState.Modified)
                 {
-                    var oldValuesDict = new System.Collections.Generic.Dictionary<string, object>();
-                    var newValuesDict = new System.Collections.Generic.Dictionary<string, object>();
+                    var oldValuesDict = new System.Collections.Generic.Dictionary<string, object?>();
+                    var newValuesDict = new System.Collections.Generic.Dictionary<string, object?>();
 
                     foreach (var prop in entry.Properties)
                     {
@@ -126,28 +127,39 @@ namespace EfCore.TamperEvident.Interceptors
             SaveChangesCompletedEventData eventData, int result, CancellationToken ct = default)
         {
             var context = eventData.Context;
-            if (!_stateMap.TryGetValue(context, out var state) || state.IsSavingLogs || !state.Preps.Any())
+            if (context == null || !_stateMap.TryGetValue(context, out var state) || state.IsSavingLogs || !state.Preps.Any())
                 return result;
 
 
             state.IsSavingLogs = true;
             var tablesToAnchor = new Dictionary<string, AuditChainState>();
+            var cachedChainStates = new Dictionary<string, AuditChainState>();
+            long lastTicks = DateTime.UtcNow.Ticks;
 
             foreach (var prep in state.Preps)
             {
 
                 string primaryKey = prep.Entry.Properties.FirstOrDefault(x => x.Metadata.IsPrimaryKey())?.CurrentValue?.ToString() ?? "N/A";
 
-                string lockQuery = SecurityHelper.GetLockQuery(_options.DbProvider);
-                var chainState = await context.Set<AuditChainState>().FromSqlRaw(lockQuery, prep.TableName).FirstOrDefaultAsync(ct);
-
-                if (chainState == null)
+                if (!cachedChainStates.TryGetValue(prep.TableName, out var chainState))
                 {
-                    chainState = new AuditChainState { TableName = prep.TableName, LastHash = "GENESIS", UnanchoredCount = 0 };
-                    context.Add(chainState);
+                    string lockQuery = SecurityHelper.GetLockQuery(_options.DbProvider);
+                    chainState = await context.Set<AuditChainState>().FromSqlRaw(lockQuery, prep.TableName).FirstOrDefaultAsync(ct);
+
+                    if (chainState == null)
+                    {
+                        chainState = new AuditChainState { TableName = prep.TableName, LastHash = "GENESIS", UnanchoredCount = 0 };
+                        context.Add(chainState);
+                    }
+                    cachedChainStates[prep.TableName] = chainState;
                 }
 
                 long timeTicks = DateTime.UtcNow.Ticks;
+                if (timeTicks <= lastTicks)
+                {
+                    timeTicks = lastTicks + 1;
+                }
+                lastTicks = timeTicks;
                 string rawData = $"{chainState.LastHash}{prep.TableName}{primaryKey}{prep.Action}{prep.OldValues}{prep.NewValues}{timeTicks}";
                 string currentHash = SecurityHelper.ComputeHash(rawData, _options.HmacSecretKey);
 
@@ -181,7 +193,7 @@ namespace EfCore.TamperEvident.Interceptors
             await context.SaveChangesAsync(ct);
 
 
-            if (state.IsTransactionOwner)
+            if (state.IsTransactionOwner && state.Transaction != null)
                 await state.Transaction.CommitAsync(ct);
 
             _stateMap.Remove(context);
