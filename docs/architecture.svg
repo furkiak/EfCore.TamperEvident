@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="276" viewBox="0 0 960 276" role="img" aria-labelledby="title description">
+  <title id="title">Tamper-evident audit flow</title>
+  <desc id="description">A business change and audit entry commit in one transaction. A durable pending anchor is delivered to an external receiver and later used to verify the chain.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#f7f9fc"/>
+      <stop offset="1" stop-color="#eef3f9"/>
+    </linearGradient>
+    <linearGradient id="card" x2="1" y2="1">
+      <stop stop-color="#ffffff" stop-opacity=".98"/>
+      <stop offset="1" stop-color="#f8fbff" stop-opacity=".88"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#1f365a" flood-opacity=".10"/>
+    </filter>
+    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0 0 7 3.5 0 7" fill="none" stroke="#7195c9" stroke-width="1.5"/>
+    </marker>
+    <style>
+      .head{font:600 15px system-ui,-apple-system,Segoe UI,sans-serif;fill:#182b45}
+      .body{font:400 11px system-ui,-apple-system,Segoe UI,sans-serif;fill:#51657e}
+      .eyebrow{font:700 10px system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:1.7px;fill:#617b9b}
+      .card{fill:url(#card);stroke:#dce6f2;filter:url(#shadow)}
+      .line{fill:none;stroke:#7195c9;stroke-width:2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="960" height="276" rx="22" fill="url(#background)"/>
+  <text x="34" y="35" class="eyebrow">AUDIT INTEGRITY FLOW</text>
+  <text x="34" y="57" class="body">One database transaction for the change and its evidence. External delivery happens afterward.</text>
+  <rect x="34" y="86" width="165" height="102" rx="17" class="card"/>
+  <circle cx="57" cy="111" r="9" fill="#dbeafe"/><path d="M53 111h8m-4-4v8" stroke="#3978c9" stroke-width="1.7"/>
+  <text x="53" y="143" class="head">Business change</text>
+  <text x="53" y="164" class="body">EF Core SaveChanges</text>
+  <rect x="235" y="86" width="165" height="102" rx="17" class="card"/>
+  <circle cx="258" cy="111" r="9" fill="#dceafc"/><path d="m254 111 3 3 5-6" fill="none" stroke="#3978c9" stroke-width="1.7"/>
+  <text x="254" y="143" class="head">HMAC chain</text>
+  <text x="254" y="164" class="body">Per-table audit entries</text>
+  <rect x="436" y="86" width="165" height="102" rx="17" class="card"/>
+  <circle cx="459" cy="111" r="9" fill="#e6e1fb"/><path d="M455 108h8m-8 4h8" stroke="#745bb7" stroke-width="1.7"/>
+  <text x="455" y="143" class="head">Pending anchor</text>
+  <text x="455" y="164" class="body">Durable delivery queue</text>
+  <rect x="637" y="86" width="165" height="102" rx="17" class="card"/>
+  <circle cx="660" cy="111" r="9" fill="#daf2e8"/><path d="m656 111 4 3 5-6" fill="none" stroke="#228b69" stroke-width="1.7"/>
+  <text x="656" y="143" class="head">External receiver</text>
+  <text x="656" y="164" class="body">Independent trust root</text>
+  <path d="M201 137h29m172 0h29m172 0h29" class="line"/>
+  <path d="M718 191v25H318v-23" fill="none" stroke="#7195c9" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+  <text x="370" y="239" class="body">Verify later against externally retained hashes</text>
+  <rect x="34" y="215" width="193" height="33" rx="11" fill="#e4edfa"/>
+  <text x="51" y="236" class="body" fill="#2c578a">ROLLBACK IF AUDIT FAILS</text>
+</svg>

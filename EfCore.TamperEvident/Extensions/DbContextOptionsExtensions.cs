@@ -13,6 +13,7 @@ namespace EfCore.TamperEvident.Extensions
         {
             var options = new TamperEvidentOptions();
             configureOptions?.Invoke(options);
+            options.Validate();
 
             builder.AddInterceptors(new TamperEvidentInterceptor(options));
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using EfCore.TamperEvident.Services;
 using Microsoft.Extensions.Logging;
 
@@ -24,7 +25,8 @@ namespace EfCore.TamperEvident.Configuration
 
     public class TamperEvidentOptions
     {
-        public string HmacSecretKey { get; set; } = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT";
+        public string HmacSecretKey { get; set; } = "";
+        public Func<Microsoft.EntityFrameworkCore.DbContext, string>? UserIdProvider { get; set; }
         public string SoftDeleteColumnName { get; set; } = "IsDeleted";
         
         public IAnchorPublisher? CustomAnchorPublisher { get; set; }
@@ -33,11 +35,30 @@ namespace EfCore.TamperEvident.Configuration
         public DatabaseProvider DbProvider { get; set; } = DatabaseProvider.SqlServer;
         public AuditOperation TrackedOperations { get; set; } = AuditOperation.All;
         public List<string> ExcludedTables { get; set; } = new List<string>();
+        public List<string> RedactedProperties { get; set; } = new List<string>
+        {
+            "Password", "PasswordHash", "ApiKey", "Secret", "Token",
+            "AccessToken", "RefreshToken", "ConnectionString"
+        };
         public int AnchorThreshold { get; set; } = 1000;
         public string? SmtpHost { get; set; }
         public int SmtpPort { get; set; } = 587;
         public string? SmtpUser { get; set; }
         public string? SmtpPassword { get; set; }
         public string? AnchorEmailTo { get; set; }
+
+        public void Validate()
+        {
+            byte[] key;
+            try { key = Convert.FromBase64String(HmacSecretKey ?? ""); }
+            catch (FormatException) { throw new InvalidOperationException("HmacSecretKey must be base64-encoded key material of at least 32 random bytes."); }
+            try
+            {
+                if (key.Length < 32 || key.All(x => x == key[0]))
+                    throw new InvalidOperationException("HmacSecretKey must be base64-encoded key material of at least 32 random bytes.");
+            }
+            finally { Array.Clear(key, 0, key.Length); }
+            if (AnchorThreshold < 1) throw new InvalidOperationException("AnchorThreshold must be positive.");
+        }
     }
 }

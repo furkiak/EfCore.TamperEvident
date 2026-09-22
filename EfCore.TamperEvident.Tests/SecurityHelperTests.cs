@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using System.Globalization;
+using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Models;
 using EfCore.TamperEvident.Services;
 using Xunit;
 
@@ -11,7 +14,7 @@ namespace EfCore.TamperEvident.Tests
         {
             // Arrange
             string data = "TestPayload";
-            string key = "MySecretKey123";
+            string key = TestKeys.Key;
 
             // Act
             string hash1 = SecurityHelper.ComputeHash(data, key);
@@ -27,8 +30,8 @@ namespace EfCore.TamperEvident.Tests
         {
             // Arrange
             string data = "TestPayload";
-            string key1 = "MySecretKey123";
-            string key2 = "DifferentKey456";
+            string key1 = TestKeys.Key;
+            string key2 = TestKeys.Other;
 
             // Act
             string hash1 = SecurityHelper.ComputeHash(data, key1);
@@ -62,6 +65,62 @@ namespace EfCore.TamperEvident.Tests
             Assert.Equal(json1, json2);
             Assert.Contains("\"A_Key\":42", json1);
             Assert.Contains("\"Z_Key\":\"Value1\"", json1);
+        }
+
+        [Fact]
+        public void SerializeDeterministic_SortsNestedObjects()
+        {
+            var first = new { Outer = new Dictionary<string, object>
+                { ["z"] = new Dictionary<string, int> { ["b"] = 2, ["a"] = 1 }, ["a"] = 0 } };
+            var second = new { Outer = new Dictionary<string, object>
+                { ["a"] = 0, ["z"] = new Dictionary<string, int> { ["a"] = 1, ["b"] = 2 } } };
+            Assert.Equal(SecurityHelper.SerializeDeterministic(first), SecurityHelper.SerializeDeterministic(second));
+        }
+
+        [Fact]
+        public void AuditHashFramesFieldsAndProtectsIdentity()
+        {
+            var log = new AuditLog
+            {
+                TableName = "a", RecordId = "bc", ActionType = "Added", UserId = "user",
+                PreviousHash = "GENESIS", CurrentHash = "", TimestampTicks = 1
+            };
+            var original = SecurityHelper.ComputeAuditHash(log, TestKeys.Key);
+            log.TableName = "ab";
+            log.RecordId = "c";
+            Assert.NotEqual(original, SecurityHelper.ComputeAuditHash(log, TestKeys.Key));
+            log.TableName = "a";
+            log.RecordId = "bc";
+            log.UserId = "other";
+            Assert.NotEqual(original, SecurityHelper.ComputeAuditHash(log, TestKeys.Key));
+        }
+
+        [Fact]
+        public void DefaultAndShortKeysAreRejected()
+        {
+            Assert.Throws<InvalidOperationException>(() => new TamperEvidentOptions().Validate());
+            Assert.Throws<InvalidOperationException>(() => new TamperEvidentOptions { HmacSecretKey = "abc" }.Validate());
+            Assert.Throws<InvalidOperationException>(() => new TamperEvidentOptions
+            {
+                HmacSecretKey = System.Convert.ToBase64String(new byte[32])
+            }.Validate());
+        }
+
+        [Fact]
+        public void CanonicalJsonDoesNotDependOnProcessCulture()
+        {
+            var value = new { Amount = 1234.56m, Nested = new { Date = new System.DateTime(2026, 9, 22, 12, 0, 0, System.DateTimeKind.Utc) } };
+            var previous = CultureInfo.CurrentCulture;
+            try
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+                var turkish = SecurityHelper.SerializeDeterministic(value);
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("en-US");
+                var english = SecurityHelper.SerializeDeterministic(value);
+                Assert.Equal(turkish, english);
+                Assert.Contains("1234.56", turkish);
+            }
+            finally { CultureInfo.CurrentCulture = previous; }
         }
     }
 }

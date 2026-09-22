@@ -22,11 +22,10 @@ namespace EfCore.TamperEvident.Services
         {
             if (string.IsNullOrEmpty(_options.SmtpHost) || string.IsNullOrEmpty(_options.AnchorEmailTo) || string.IsNullOrEmpty(_options.SmtpUser))
             {
-                _logger?.LogWarning("SMTP Host, User, or AnchorEmailTo is not configured. Anchor will not be sent.");
-                return;
+                throw new InvalidOperationException("SMTP Host, User, or AnchorEmailTo is not configured; the anchor remains pending.");
             }
 
-            var mailMessage = new MailMessage
+            using var mailMessage = new MailMessage
             {
                 From = new MailAddress(_options.SmtpUser),
                 Subject = $"SECURITY ANCHOR - {tableName} Table",
@@ -52,6 +51,7 @@ namespace EfCore.TamperEvident.Services
                 catch (Exception ex)
                 {
                     _logger?.LogError(ex, "Failed to send anchor email for table {TableName}.", tableName);
+                    throw;
                 }
             }
         }

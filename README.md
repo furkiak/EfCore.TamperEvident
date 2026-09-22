@@ -1,281 +1,116 @@
-# EF Core Tamper-Evident Audit Trail
+# EF Core Tamper-Evident
 
-![NuGet Version](https://img.shields.io/badge/nuget-v1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![EF Core](https://img.shields.io/badge/EF_Core-6.0%20%7C%2010.0-purple)
+An EF Core audit trail that links row changes with HMAC-SHA256 and can export periodic hashes to a separate trust boundary. It records inserts, updates and deletes on both `SaveChanges()` and `SaveChangesAsync()`, including database-generated primary keys.
 
-Enterprise-grade **tamper-evident audit logging** for Entity Framework Core.
+![Audit flow from business change through the HMAC chain and external anchor](docs/architecture.svg)
 
-`EfCore.TamperEvident` provides a **zero-trust audit trail** mechanism using **cryptographic hash chaining** to make database manipulation detectable — even in scenarios where database administrators have full access to the database server.
+> **Release status:** this branch is the **unpublished 2.0.0 preview**. NuGet 1.0.1 uses a different hash and configuration format. Do not apply this branch to an existing 1.x audit database without a reviewed migration. SQL Server has real integration coverage; PostgreSQL and MySQL are not yet integration-verified.
 
-Designed for systems requiring **compliance, forensic traceability, and high-integrity audit logging**.
+## Why it exists
 
+Ordinary application logs can be edited along with the records they describe. This library places each audit entry in a per-table chain:
 
-<p align="center">
-  <img src="https://github.com/furkiak/EfCore.TamperEvident/blob/main/image.jpg" width="600" title="Tamper Evident">
-</p>
-
-
----
-
-## ✨ Key Features
-
-### 🔐 Cryptographic HMAC Hash Chain
-Each audit record is cryptographically linked to the previous entry using **HMAC-SHA256 hashing** and a secure secret key, creating an immutable audit sequence.
-
-Any modification, deletion, or insertion into historical records immediately breaks chain integrity.
-
----
-
-### 🛡 SMTP Anchoring (Anti-DBA Tampering)
-Protects against **database history rewriting attacks**.
-
-The library periodically generates a **Root Hash (Anchor)** and sends it to an external secure email address. Even if a DBA recalculates hashes and rewrites history inside the database, integrity verification will fail when compared with externally stored anchors.
-
-Furthermore, attackers cannot regenerate valid hashes without the Application's internal `HmacSecretKey`, completely preventing DBA-level forgery.
----
-
-### ⚡ Concurrency-Safe Chain Generation
-Prevents **chain forks** and race conditions in high-concurrency environments.
-
-Uses native database row-level locking mechanisms:
-
-| Database | Lock Strategy |
-|----------|----------------|
-| SQL Server | `UPDLOCK` |
-| PostgreSQL | `FOR UPDATE` |
-| MySQL | `FOR UPDATE` |
-
----
-
-### 🔄 Two-Phase Commit Interception
-Fully compatible with `IDENTITY` / auto-increment primary keys.
-
-The interceptor safely captures entity states and generates audit logs **after primary keys are created**, ensuring referential accuracy.
-
----
-
-### 📦 Deterministic JSON Serialization
-Eliminates hash inconsistencies caused by unpredictable property ordering during JSON serialization.
-
-Ensures **stable, repeatable cryptographic hashes** across environments.
-
-**JSON Diff Profiling:** Only the `Modified` properties (changing from original to new value) are serialized into the audit logs, drastically reducing database storage bloat for large entities.
-
----
-
-### 🗑 Intelligent Soft-Delete Detection
-If you use logical deletions (`IsDeleted = true`), the library will automatically detect it and mark the row as `SoftDelete` instead of treating it as a standard data `Update`. This provides deeper insights into your evidence analytics.
----
-
-## 📦 Installation
-
-### Package Manager Console
-
-```powershell
-Install-Package EfCore.TamperEvident
+```text
+business row -> audit entry -> HMAC(previous hash + complete audit identity and payload)
+                                     |
+                             next audit entry
+                                     |
+                           pending external anchor
 ```
 
-### .NET CLI
+The HMAC covers the audit ID, table, composite record key, action, old and new values, actor, timestamp and previous hash. Fields are length-framed so two different records cannot hash to the same byte sequence by ambiguous concatenation. When an anchor is delivered and retained outside the database, a verifier can detect a rewritten or truncated chain relative to that trusted anchor.
 
-```bash
-dotnet add package EfCore.TamperEvident
-```
+This is **tamper evidence**, not a guarantee that the database cannot be changed. The protection depends on an application-held secret that database administrators cannot read and on independently retained external anchors. Verification without external anchors cannot prove that the whole history was not replaced by someone who also has the HMAC key. The audit payload is plaintext: configure access control, retention and redaction for your data.
 
----
+## Requirements
 
-## 🚀 Quick Start
+- .NET 9, EF Core 9 and a relational EF provider
+- A base64-encoded, randomly generated HMAC key of at least 32 bytes, stored outside source control and outside the audited database
+- Three mapped tables: `AuditLogs`, `AuditChainStates` and `PendingAnchors`
+- A scheduled call to `AnchorDispatcher` if external anchoring is enabled
 
-### 1. Add Required Entities to Your DbContext
+Generate a key once with `RandomNumberGenerator.GetBytes(32)`, convert it with `Convert.ToBase64String`, and store it in a production secret manager. Do not rotate it without preserving the previous key and a verified migration strategy: existing hashes require the original key.
 
-Add the required audit tables to your existing `DbContext`.
+## Quick start
+
+Build the unpublished preview locally with `dotnet pack -c Release`. For the published 1.0.1 package, use its matching tag and documentation.
 
 ```csharp
+using EfCore.TamperEvident.Extensions;
 using EfCore.TamperEvident.Models;
 using Microsoft.EntityFrameworkCore;
 
-public class MyCrmDbContext : DbContext
+public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
-    public MyCrmDbContext(
-        DbContextOptions<MyCrmDbContext> options
-    ) : base(options)
+    public DbSet<Customer> Customers => Set<Customer>();
+
+    protected override void OnModelCreating(ModelBuilder builder)
     {
+        base.OnModelCreating(builder);
+        builder.AddTamperEvidentModels();
     }
-
-    // Required by EfCore.TamperEvident
-    public DbSet<AuditLog> AuditLogs { get; set; }
-
-    public DbSet<AuditChainState> AuditChainStates { get; set; }
-
-    // Your application entities
-    public DbSet<Customer> Customers { get; set; }
 }
 ```
 
----
-
-### 2. Configure in `Program.cs`
-
-Enable tamper-evident auditing with a single extension method.
-
 ```csharp
-using EfCore.TamperEvident.Configuration;
-using EfCore.TamperEvident.Extensions;
-
-builder.Services.AddDbContext<MyCrmDbContext>(options =>
+builder.Services.AddDbContext<AppDbContext>((services, options) =>
 {
-    options.UseSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection"));
-
+    options.UseSqlServer(builder.Configuration.GetConnectionString("App"));
     options.UseTamperEvidentAudit(audit =>
     {
-        audit.DbProvider = DatabaseProvider.SqlServer;
-
-        // Track Insert / Update / Delete
-        audit.TrackedOperations = AuditOperation.All;
-
-        // Exclude specific tables
-        audit.ExcludedTables = new List<string>
-        {
-            "SystemLogs",
-            "TempData"
-        };
-
-        // SMTP Anchoring (Optional but Recommended)
+        audit.HmacSecretKey = builder.Configuration["Audit:HmacKey"]
+            ?? throw new InvalidOperationException("Audit:HmacKey is missing");
         audit.AnchorThreshold = 500;
-
-        audit.SmtpHost = "smtp.company.com";
-        audit.SmtpPort = 587;
-        audit.SmtpUser = "security-bot@company.com";
-        audit.SmtpPassword = "your-secure-password";
-
-        // Secret keys for cryptographic strength
-        audit.HmacSecretKey = "Your_Very_Strong_App_Secret_Key_Here";
-        audit.SoftDeleteColumnName = "IsDeleted"; // Customize soft-delete column
-        audit.AnchorEmailTo =
-            "compliance-officer@company.com";
+        audit.UserIdProvider = _ => services
+            .GetRequiredService<IHttpContextAccessor>()
+            .HttpContext?.User.Identity?.Name ?? "System";
     });
 });
 ```
 
----
+Add `IHttpContextAccessor` if you use this actor example, generate an EF migration, review it, and apply it before writing audited entities. The library deliberately fails when audit models or the key are missing. A change and its audit entries are written in one transaction; an audit failure rolls back the business change. If the caller owns the transaction, the library leaves a successful transaction open for the caller. On an audit failure, it rolls back even that caller-owned transaction to prevent an unaudited commit. Use a fresh `DbContext` after a rolled-back transaction.
 
-### 3. Start Using EF Core Normally
+The package redacts common secret-named properties such as `Password`, `ApiKey` and `Token` in old/new snapshots. Extend `RedactedProperties` for your domain. Record IDs, actor IDs and other properties can still contain personal data; review your schema before enabling an audit trail.
 
-No business logic changes required.
+## External anchors
 
-The library automatically intercepts:
-
-- `SaveChanges()`
-- `SaveChangesAsync()`
-
-and securely builds the audit chain in the background.
+Reaching `AnchorThreshold` persists a `PendingAnchor` in the **same** transaction as the business row and audit entries. It does not claim that email was sent. Run this after commits, for example in a hosted background job using a fresh context:
 
 ```csharp
-_context.Customers.Add(new Customer
+var auditOptions = new TamperEvidentOptions
 {
-    Name = "John Doe",
-    Company = "Acme Corp"
-});
-
-await _context.SaveChangesAsync();
+    HmacSecretKey = secretFromYourSecretManager,
+    SmtpHost = smtpHost,
+    SmtpUser = smtpUser,
+    SmtpPassword = smtpPassword,
+    AnchorEmailTo = externalMailbox
+};
+var sent = await new AnchorDispatcher(dbContext, auditOptions)
+    .DispatchPendingAsync(cancellationToken: stoppingToken);
 ```
 
-Audit logs are generated automatically.
+You can inject an `IAnchorPublisher` via `CustomAnchorPublisher` instead of SMTP. Delivery errors leave anchors pending for retry. Delivery is at least once, so your external receiver should tolerate duplicate hashes. Keep the receiver and its retained messages outside the audited database's administrative boundary. Monitor pending age and failures: a queued hash alone does not protect against a full database rewrite.
 
----
+To verify, obtain hashes from that external receiver in **chain order** and pass them to `AuditVerifier.VerifyTableIntegrityAsync(tableName, externalHashes)`. The verifier does not alter the supplied list; missing, extra or out-of-order hashes fail verification. An empty audit history is **inconclusive**, and a missing or mismatched chain state or external anchor is a failure. A v1 chain is rejected by the v2 verifier until an explicit migration is designed and reviewed.
 
-## 🔍 Verifying Audit Integrity
+## Test and support status
 
-If tampering is suspected, use the `AuditVerifier` to validate audit integrity.
-
-```csharp
-using EfCore.TamperEvident.Configuration;
-using EfCore.TamperEvident.Services;
-
-// Have your configured options with the Secret Key ready
-var options = new TamperEvidentOptions 
-{ 
-    HmacSecretKey = "Your_Very_Strong_App_Secret_Key_Here" 
-};
-
-// Inject your DbContext and pass the options
-var verifier = new AuditVerifier(_context, options);
-
-// Optional:
-// Anchor hashes received externally (email)
-var providedAnchors = new List<string>
-{
-    "a1b2c3d4...",
-    "f5e6d7c8..."
-};
-
-// Verify table integrity
-var result =
-    await verifier.VerifyTableIntegrityAsync(
-        "Customers",
-        providedAnchors);
-
-if (result.IsValid)
-{
-    Console.WriteLine(result.Message);
-    // Verification successful
-}
-else
-{
-    Console.WriteLine(
-        $"SECURITY ALERT: {result.Message}");
-}
+```powershell
+dotnet test --filter 'Category!=SqlServer'
+$env:EFCORE_AUDIT_SQLSERVER='Server=.\SQLEXPRESS;Integrated Security=true;TrustServerCertificate=true'
+dotnet test
 ```
- 
----
 
-## 🏗 Supported Databases
+The first command runs portable unit tests; the second additionally creates and deletes uniquely named `AuditIt_*` databases on your **test** SQL Server. It checks sync/async saves, failure rollback, caller-owned transactions, concurrent writers, verification and anchor retries. Do not point this environment variable at production.
 
-| Database | Supported |
-|----------|------------|
-| SQL Server | ✅ |
-| PostgreSQL | ✅ |
-| MySQL | ✅ |
+SQL Server uses transaction-scoped `sp_getapplock` plus a chain-row update lock. PostgreSQL and MySQL have provider-specific row-lock queries but lack integration coverage here; treat them as experimental and validate their transaction and concurrent first-row behavior before use. EF Core's implicitly retrying execution strategy requires its documented user-transaction pattern and is not covered by the current integration tests.
 
----
+## Upgrade and threat-model notes
 
-## 🎯 Use Cases
+- **1.x → 2.0 preview is breaking.** v2 requires a base64 key, adds `PendingAnchors` and `LastTimestampTicks`, and changes hash inputs. Keep 1.x data and external anchors intact. Do not reset or delete a production audit chain to make it pass the v2 verifier.
+- A person with the HMAC key can forge a chain; rotate exposed keys and investigate under a documented incident process. The old public default key must never be reused.
+- External anchor delivery is a separate trust boundary and can fail. Retention, access control, backup, monitoring and independent verification remain operational responsibilities.
+- Raw SQL, bulk updates, direct database writes and changes outside EF `SaveChanges` bypass interceptors. Route relevant writes through the audited context or design a database-level control.
+- `AuditLogs` contains old and new values. Restrict reads and configure redaction before using it with sensitive records.
 
-`EfCore.TamperEvident` is particularly suitable for:
-
-- Financial systems
-- Healthcare applications
-- ERP / CRM platforms
-- Compliance-heavy environments
-- Legal evidence retention
-- High-security enterprise systems
-
----
-
-## ⚠ Security Model
-
-This library provides **tamper evidence**, not tamper prevention.
-
-An attacker with sufficient privileges may still alter data, but **those modifications become cryptographically detectable**.
-
-For maximum protection:
-
-- Enable **SMTP Anchoring**
-- Store anchor emails externally
-- Restrict database administrative access
-- Run scheduled integrity verification
-
----
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome.
-
-Please open an issue before submitting large architectural changes.
-
----
-
-## 📄 License
-
-Licensed under the **MIT License**.
+Contributions and reproducible issues are welcome. Licensed under [MIT](LICENSE).

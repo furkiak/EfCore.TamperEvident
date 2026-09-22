@@ -22,8 +22,30 @@ namespace EfCore.TamperEvident.Tests
         {
             return new TamperEvidentOptions
             {
-                HmacSecretKey = "TestSecretKey123"
+                HmacSecretKey = TestKeys.Key
             };
+        }
+
+        [Fact]
+        public async Task EmptyHistoryWithExternalAnchorIsInvalid()
+        {
+            await using var context = new TestDbContext(GetMemoryOptions(Guid.NewGuid().ToString()));
+            var anchors = new List<string> { "v2:trusted-external-hash" };
+            var result = await new AuditVerifier(context, GetTestOptions())
+                .VerifyTableIntegrityAsync("Customers", anchors);
+            Assert.False(result.IsValid);
+            Assert.Contains("ANCHOR MISMATCH", result.Message);
+            Assert.Single(anchors);
+        }
+
+        [Fact]
+        public async Task EmptyHistoryWithoutTrustRootIsInconclusive()
+        {
+            await using var context = new TestDbContext(GetMemoryOptions(Guid.NewGuid().ToString()));
+            var result = await new AuditVerifier(context, GetTestOptions())
+                .VerifyTableIntegrityAsync("Customers");
+            Assert.False(result.IsValid);
+            Assert.Contains("INCONCLUSIVE", result.Message);
         }
 
         [Fact]
@@ -36,10 +58,9 @@ namespace EfCore.TamperEvident.Tests
             using (var context = new TestDbContext(dbOptions))
             {
                 // genesis log
-                string rawData1 = $"GENESISCustomersuser1InsertedOldNew1000";
-                string hash1 = SecurityHelper.ComputeHash(rawData1, options.HmacSecretKey);
+                string hash1 = "";
 
-                context.AuditLogs.Add(new AuditLog
+                var log = new AuditLog
                 {
                     Id = Guid.NewGuid(),
                     TableName = "Customers",
@@ -51,13 +72,14 @@ namespace EfCore.TamperEvident.Tests
                     PreviousHash = "GENESIS",
                     CurrentHash = hash1,
                     UserId = "Sys"
-                });
+                };
+                log.CurrentHash = hash1 = SecurityHelper.ComputeAuditHash(log, options.HmacSecretKey);
+                context.AuditLogs.Add(log);
 
                 // second log
-                string rawData2 = $"{hash1}Customersuser2UpdatedOld2New22000";
-                string hash2 = SecurityHelper.ComputeHash(rawData2, options.HmacSecretKey);
+                string hash2 = "";
 
-                context.AuditLogs.Add(new AuditLog
+                var log2 = new AuditLog
                 {
                     Id = Guid.NewGuid(),
                     TableName = "Customers",
@@ -69,6 +91,12 @@ namespace EfCore.TamperEvident.Tests
                     PreviousHash = hash1,
                     CurrentHash = hash2,
                     UserId = "Sys"
+                };
+                log2.CurrentHash = hash2 = SecurityHelper.ComputeAuditHash(log2, options.HmacSecretKey);
+                context.AuditLogs.Add(log2);
+                context.AuditChainStates.Add(new AuditChainState
+                {
+                    TableName = "Customers", LastHash = hash2, LastTimestampTicks = 2000
                 });
 
                 await context.SaveChangesAsync();
@@ -95,10 +123,9 @@ namespace EfCore.TamperEvident.Tests
 
             using (var context = new TestDbContext(dbOptions))
             {
-                string rawData1 = $"GENESISCustomersuser1InsertedOldNew1000";
-                string hash1 = SecurityHelper.ComputeHash(rawData1, options.HmacSecretKey);
+                string hash1 = "";
 
-                context.AuditLogs.Add(new AuditLog
+                var log = new AuditLog
                 {
                     Id = Guid.NewGuid(),
                     TableName = "Customers",
@@ -110,7 +137,9 @@ namespace EfCore.TamperEvident.Tests
                     PreviousHash = "GENESIS",
                     CurrentHash = hash1,
                     UserId = "Sys"
-                });
+                };
+                log.CurrentHash = hash1 = SecurityHelper.ComputeAuditHash(log, options.HmacSecretKey);
+                context.AuditLogs.Add(log);
 
                 // second log has wrong previous hash intentionally
                 context.AuditLogs.Add(new AuditLog

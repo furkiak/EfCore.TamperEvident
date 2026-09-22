@@ -8,6 +8,7 @@ namespace EfCore.TamperEvident.Models
         public required string TableName { get; set; }
         public required string LastHash { get; set; }
         public int UnanchoredCount { get; set; }  
+        public long LastTimestampTicks { get; set; }
         public DateTime LastModified { get; set; } = DateTime.UtcNow;
     }
 }

@@ -1,0 +1,34 @@
+name: .NET verification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "CiOnly!9Aq4p4r2"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "bash -c 'echo > /dev/tcp/localhost/1433'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 9.0.x
+      - name: Run unit and SQL Server integration tests
+        run: dotnet test -c Release --nologo
+        env:
+          EFCORE_AUDIT_SQLSERVER: "Server=localhost,1433;User ID=sa;Password=CiOnly!9Aq4p4r2;TrustServerCertificate=true;Encrypt=true"
