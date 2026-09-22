@@ -6,12 +6,13 @@ This preview changes the audit format and database schema. It must not be instal
 
 - Audit both synchronous and asynchronous EF Core saves, including cancellation and rollback behavior.
 - Keep a caller-owned transaction open after successful saves; roll it back if audit generation fails.
+- Reject audited `SaveChanges(false)` calls and roll back instead of writing business entries twice.
 - Use a versioned, length-framed HMAC payload covering audit identity, actor and composite primary key.
 - Require application-supplied base64 key material and reject empty, short or uniform keys.
 - Add nested deterministic JSON serialization and default redaction for common secret fields.
 - Persist external anchors in a transactional outbox; retry via `AnchorDispatcher`.
 - Fail closed on missing audit history, missing chain state and unmatched external anchors.
-- Add SQL Server integration tests for concurrency, rollback, cancellation and delivery failure.
+- Add SQL Server integration tests for concurrency, rollback, cancellation, delivery failure and retry configuration.
 - Correct the package's README, metadata, claims and support limits.
 
 ## 1.0.1 — published baseline

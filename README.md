@@ -70,6 +70,8 @@ builder.Services.AddDbContext<AppDbContext>((services, options) =>
 
 Add `IHttpContextAccessor` if you use this actor example, generate an EF migration, review it, and apply it before writing audited entities. The library deliberately fails when audit models or the key are missing. A change and its audit entries are written in one transaction; an audit failure rolls back the business change. If the caller owns the transaction, the library leaves a successful transaction open for the caller. On an audit failure, it rolls back even that caller-owned transaction to prevent an unaudited commit. Use a fresh `DbContext` after a rolled-back transaction.
 
+Audited saves require the default `acceptAllChangesOnSuccess: true`. `SaveChanges(false)` and `SaveChangesAsync(false)` are rejected with a transaction rollback: leaving business entries in a pending state would cause the internal audit save to write them a second time. This is a current API limit, including when the caller owns the transaction. Use a fresh context after this rejection.
+
 The package redacts common secret-named properties such as `Password`, `ApiKey` and `Token` in old/new snapshots. Extend `RedactedProperties` for your domain. Record IDs, actor IDs and other properties can still contain personal data; review your schema before enabling an audit trail.
 
 ## External anchors
@@ -101,9 +103,11 @@ $env:EFCORE_AUDIT_SQLSERVER='Server=.\SQLEXPRESS;Integrated Security=true;TrustS
 dotnet test
 ```
 
-The first command runs portable unit tests; the second additionally creates and deletes uniquely named `AuditIt_*` databases on your **test** SQL Server. It checks sync/async saves, failure rollback, caller-owned transactions, concurrent writers, verification and anchor retries. Do not point this environment variable at production.
+The first command runs portable unit tests; the second additionally creates and deletes uniquely named `AuditIt_*` databases on your **test** SQL Server. It checks sync/async saves, failure rollback, `SaveChanges(false)` rejection, caller-owned transactions, concurrent writers, retry configuration, verification and anchor retries. Do not point this environment variable at production.
 
-SQL Server uses transaction-scoped `sp_getapplock` plus a chain-row update lock. PostgreSQL and MySQL have provider-specific row-lock queries but lack integration coverage here; treat them as experimental and validate their transaction and concurrent first-row behavior before use. EF Core's implicitly retrying execution strategy requires its documented user-transaction pattern and is not covered by the current integration tests.
+SQL Server uses transaction-scoped `sp_getapplock` plus a chain-row update lock. PostgreSQL and MySQL have provider-specific row-lock queries but lack integration coverage here; treat them as experimental and validate their transaction and concurrent first-row behavior before use.
+
+If SQL Server `EnableRetryOnFailure()` is enabled, a direct audited `SaveChanges` call fails because the interceptor starts a user transaction. Wrap the **whole save operation** in `Database.CreateExecutionStrategy().ExecuteAsync(...)` and create a fresh `DbContext` inside each attempt. The SQL Server integration test covers the direct-call failure and the wrapped success path, but does not inject an actual transient fault or prove commit-uncertainty recovery. Follow [EF Core's transaction and retry guidance](https://learn.microsoft.com/en-us/ef/core/miscellaneous/connection-resiliency#execution-strategies-and-transactions) before deploying a retry policy; a commit can succeed even if its acknowledgement is lost.
 
 ## Upgrade and threat-model notes
 

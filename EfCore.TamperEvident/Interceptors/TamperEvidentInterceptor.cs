@@ -86,6 +86,7 @@ public sealed class TamperEvidentInterceptor : SaveChangesInterceptor
         if (context == null || !_states.TryGetValue(context, out var state) || state.IsSavingLogs) return result;
         try
         {
+            EnsureBusinessChangesAccepted(state);
             state.IsSavingLogs = true;
             WriteAudit(context, state);
             if (state.OwnsTransaction) state.Transaction!.Commit();
@@ -115,6 +116,7 @@ public sealed class TamperEvidentInterceptor : SaveChangesInterceptor
         if (context == null || !_states.TryGetValue(context, out var state) || state.IsSavingLogs) return result;
         try
         {
+            EnsureBusinessChangesAccepted(state);
             state.IsSavingLogs = true;
             await WriteAuditAsync(context, state, ct);
             if (state.OwnsTransaction) await state.Transaction!.CommitAsync(ct);
@@ -149,6 +151,15 @@ public sealed class TamperEvidentInterceptor : SaveChangesInterceptor
 
     private bool IsSavingLogs(DbContext context) =>
         _states.TryGetValue(context, out var state) && state.IsSavingLogs;
+
+    private static void EnsureBusinessChangesAccepted(AuditState state)
+    {
+        if (state.Preps.Any(x => x.Entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+            throw new NotSupportedException(
+                "Audited SaveChanges requires acceptAllChangesOnSuccess: true. " +
+                "SaveChanges(false) leaves business entries pending and would write them again while saving audit records. " +
+                "The transaction has been rolled back; retry with a fresh DbContext.");
+    }
 
     private static void DetachAuditState(DbContext context)
     {

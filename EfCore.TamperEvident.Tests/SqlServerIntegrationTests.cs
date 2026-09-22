@@ -11,7 +11,7 @@ public sealed class SqlServerIntegrationTests
     private static string? ServerConnection => Environment.GetEnvironmentVariable("EFCORE_AUDIT_SQLSERVER");
 
     private static (string Connection, DbContextOptions<TestDbContext> DbOptions, TamperEvidentOptions AuditOptions) CreateOptions(
-        string server, Action<TamperEvidentOptions>? configure = null)
+        string server, Action<TamperEvidentOptions>? configure = null, bool enableRetry = false)
     {
         var connection = new SqlConnectionStringBuilder(server)
         {
@@ -22,7 +22,7 @@ public sealed class SqlServerIntegrationTests
         var audit = new TamperEvidentOptions { HmacSecretKey = TestKeys.Key, AnchorThreshold = 2 };
         configure?.Invoke(audit);
         var builder = new DbContextOptionsBuilder<TestDbContext>()
-            .UseSqlServer(connection);
+            .UseSqlServer(connection, sql => { if (enableRetry) sql.EnableRetryOnFailure(); });
         builder.UseTamperEvidentAudit(x =>
             {
                 x.HmacSecretKey = audit.HmacSecretKey;
@@ -76,6 +76,80 @@ public sealed class SqlServerIntegrationTests
             var tampered = await new AuditVerifier(check, setup.AuditOptions)
                 .VerifyTableIntegrityAsync("TestEntities", externalAnchors);
             Assert.False(tampered.IsValid);
+        }
+        finally { await context.Database.EnsureDeletedAsync(); }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServer")]
+    public async Task RetryingStrategyRequiresWholeSaveDelegate()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server, enableRetry: true);
+        await using var owner = new TestDbContext(setup.DbOptions);
+        await owner.Database.EnsureCreatedAsync();
+        try
+        {
+            owner.TestEntities.Add(new TestEntity { Name = "direct", Price = 1 });
+            await Assert.ThrowsAsync<InvalidOperationException>(() => owner.SaveChangesAsync());
+            await using (var check = new TestDbContext(setup.DbOptions))
+            {
+                Assert.Empty(await check.TestEntities.ToListAsync());
+                Assert.Empty(await check.AuditLogs.ToListAsync());
+            }
+
+            var strategy = owner.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var attempt = new TestDbContext(setup.DbOptions);
+                attempt.TestEntities.Add(new TestEntity { Name = "wrapped", Price = 2 });
+                await attempt.SaveChangesAsync();
+            });
+            await using var finalCheck = new TestDbContext(setup.DbOptions);
+            Assert.Equal("wrapped", (await finalCheck.TestEntities.SingleAsync()).Name);
+            Assert.True((await new AuditVerifier(finalCheck, setup.AuditOptions)
+                .VerifyTableIntegrityAsync("TestEntities")).IsValid);
+        }
+        finally { await owner.Database.EnsureDeletedAsync(); }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServer")]
+    public async Task SaveWithoutAcceptingChangesIsRejectedAndRolledBack()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server);
+        await using var context = new TestDbContext(setup.DbOptions);
+        await context.Database.EnsureCreatedAsync();
+        try
+        {
+            context.TestEntities.Add(new TestEntity { Name = "unsupported-sync", Price = 1 });
+            var syncError = Assert.Throws<NotSupportedException>(() => context.SaveChanges(false));
+            Assert.Contains("acceptAllChangesOnSuccess", syncError.Message);
+            Assert.Null(context.Database.CurrentTransaction);
+
+            await using var check = new TestDbContext(setup.DbOptions);
+            Assert.Empty(await check.TestEntities.ToListAsync());
+            Assert.Empty(await check.AuditLogs.ToListAsync());
+
+            await using var asyncContext = new TestDbContext(setup.DbOptions);
+            asyncContext.TestEntities.Add(new TestEntity { Name = "unsupported-async", Price = 2 });
+            var asyncError = await Assert.ThrowsAsync<NotSupportedException>(
+                () => asyncContext.SaveChangesAsync(false));
+            Assert.Contains("acceptAllChangesOnSuccess", asyncError.Message);
+            Assert.Null(asyncContext.Database.CurrentTransaction);
+            Assert.Empty(await check.TestEntities.ToListAsync());
+            Assert.Empty(await check.AuditLogs.ToListAsync());
+
+            await using var externalContext = new TestDbContext(setup.DbOptions);
+            await using (var transaction = await externalContext.Database.BeginTransactionAsync())
+            {
+                externalContext.TestEntities.Add(new TestEntity { Name = "unsupported-external", Price = 3 });
+                await Assert.ThrowsAsync<NotSupportedException>(() => externalContext.SaveChangesAsync(false));
+                Assert.Null(externalContext.Database.CurrentTransaction);
+            }
+            Assert.Empty(await check.TestEntities.ToListAsync());
+            Assert.Empty(await check.AuditLogs.ToListAsync());
         }
         finally { await context.Database.EnsureDeletedAsync(); }
     }
