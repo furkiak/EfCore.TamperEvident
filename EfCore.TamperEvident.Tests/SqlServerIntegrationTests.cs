@@ -12,6 +12,39 @@ public sealed class SqlServerIntegrationTests
 {
     private static string? ServerConnection => Environment.GetEnvironmentVariable("EFCORE_AUDIT_SQLSERVER");
 
+    [Fact]
+    [Trait("Category", "SqlServer")]
+    public async Task StoredFixedV2ChainRetainsUnicodeNullAndTrustedAnchor()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server);
+        await using var owner = new TestDbContext(setup.DbOptions);
+        await owner.Database.EnsureCreatedAsync();
+        try
+        {
+            const string expected = "v2:0bc17f9fc5c539db35b73e99ca3f4a662c81bdcb0a92c838ed96443d9d00549f";
+            var row = AuditV2CompatibilityTests.CreateLog(null, expected);
+            owner.AuditLogs.Add(row);
+            owner.AuditChainStates.Add(new AuditChainState
+            {
+                TableName = row.TableName, LastHash = expected, LastTimestampTicks = row.TimestampTicks,
+                UnanchoredCount = 0
+            });
+            await owner.SaveChangesAsync();
+            await using var check = new TestDbContext(setup.DbOptions);
+            var restored = await check.AuditLogs.SingleAsync();
+            Assert.Equal(row.NewValues, restored.NewValues);
+            Assert.Null(restored.OldValues);
+            var verifier = new AuditVerifier(check, setup.AuditOptions);
+            var result = await verifier.VerifyTableIntegrityAsync(row.TableName, new[] { expected });
+            Assert.True(result.IsValid, result.Message);
+            restored.OldValues = "";
+            await check.SaveChangesAsync();
+            Assert.False((await verifier.VerifyTableIntegrityAsync(row.TableName, new[] { expected })).IsValid);
+        }
+        finally { await owner.Database.EnsureDeletedAsync(); }
+    }
+
     private static (string Connection, DbContextOptions<TestDbContext> DbOptions, TamperEvidentOptions AuditOptions) CreateOptions(
         string server, Action<TamperEvidentOptions>? configure = null, bool enableRetry = false)
     {
@@ -429,9 +462,12 @@ public sealed class SqlServerIntegrationTests
         Assert.NotNull(directory);
         var configuration = AppContext.BaseDirectory.Contains(Path.DirectorySeparatorChar + "Release" + Path.DirectorySeparatorChar)
             ? "Release" : "Debug";
-        var worker = Path.Combine(directory.FullName, "samples", "SqlServerDemo", "bin", configuration, "net9.0", "SqlServerDemo.dll");
+        var framework = new DirectoryInfo(AppContext.BaseDirectory).Name;
+        Assert.Contains(framework, new[] { "net9.0", "net10.0" });
+        var worker = Path.Combine(directory.FullName, "samples", "SqlServerDemo", "bin", configuration, framework, "SqlServerDemo.dll");
         Assert.True(File.Exists(worker), "Build the test project and its dispatcher worker before running integration tests.");
-        var start = new System.Diagnostics.ProcessStartInfo("dotnet")
+        var host = Environment.GetEnvironmentVariable("EFCORE_AUDIT_TEST_DOTNET_HOST") ?? "dotnet";
+        var start = new System.Diagnostics.ProcessStartInfo(host)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
         };

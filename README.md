@@ -4,7 +4,7 @@ An EF Core audit trail that links row changes with HMAC-SHA256 and can export pe
 
 ![Audit flow from business change through the HMAC chain and external anchor](docs/architecture.svg)
 
-> **Release status:** this branch is the **unpublished 2.0.0 preview**. NuGet 1.0.1 uses a different hash and configuration format. Do not apply this branch to an existing 1.x audit database without a reviewed migration. SQL Server has real integration coverage; PostgreSQL and MySQL are not yet integration-verified.
+> **Release status:** this branch is the **unpublished 2.0.0-preview.2** for .NET 9/EF Core 9 and .NET 10/EF Core 10. NuGet 1.0.1 uses a different hash and configuration format. Do not apply this branch to an existing 1.x audit database without a reviewed migration. SQL Server has real integration coverage; PostgreSQL and MySQL are not yet integration-verified.
 
 ## Why it exists
 
@@ -24,7 +24,7 @@ This is **tamper evidence**, not a guarantee that the database cannot be changed
 
 ## Requirements
 
-- .NET 9, EF Core 9 and a relational EF provider
+- .NET 9 with EF Core 9.0.20, or .NET 10 with EF Core 10.0.12, and a matching relational EF provider
 - A base64-encoded, randomly generated HMAC key of at least 32 bytes, stored outside source control and outside the audited database
 - Three mapped tables: `AuditLogs`, `AuditChainStates` and `PendingAnchors`
 - A scheduled call to `AnchorDispatcher` if external anchoring is enabled
@@ -32,6 +32,8 @@ This is **tamper evidence**, not a guarantee that the database cannot be changed
 Generate a key once with `RandomNumberGenerator.GetBytes(32)`, convert it with `Convert.ToBase64String`, and store it in a production secret manager. Do not rotate it without preserving the previous key and a verified migration strategy: existing hashes require the original key.
 
 The [key lifecycle plan](docs/KEY_LIFECYCLE.md) explains host secret-manager integration, operational key identities, separate-chain rotation and read-only verification of 1.x history. Per-row key rotation and in-place 1.x migration are not supported.
+
+Build with a stable .NET 10 SDK. The NuGet package includes separate `net9.0` and `net10.0` assemblies and dependency groups; keep Microsoft's EF packages on the same version. A .NET 10 consumer selects the EF Core 10 asset, so review the application's EF upgrade and migrations. The library's v2 hash framing and audit-table mapping are unchanged from preview.1; adding an asset does not migrate a database. See [runtime support](docs/RUNTIME_SUPPORT.md).
 
 ## Quick start
 
@@ -41,7 +43,7 @@ For a complete runnable example against an **isolated test SQL Server**, run:
 
 ```powershell
 $env:EFCORE_AUDIT_SQLSERVER='Server=.\SQLEXPRESS;Integrated Security=true;TrustServerCertificate=true;Encrypt=true'
-dotnet run --project samples/SqlServerDemo -c Release
+dotnet run --project samples/SqlServerDemo -c Release --framework net10.0
 ```
 
 The sample creates a uniquely named `AuditDemo_*` database, inserts one synthetic customer, verifies the internal chain and pending anchor, and deletes its database in `finally`. Expected output includes `Business rows: 1; audit rows: 1` and `Pending anchors: 1; delivered: 0`. It does not send email or verify an independent anchor. Its ephemeral random key is never printed; use a retained secret-manager key and reviewed migrations for a retained application database. The test-only certificate exception is not a production TLS recommendation.
@@ -126,11 +128,12 @@ The local SMTP tests use actual loopback TCP/SMTP, including a closed port, disp
 
 | Target | Evidence / support |
 | --- | --- |
-| .NET 9 / EF Core 9.0.16 / SQL Server 2022 | Locally verified; GitHub CI configured for the same target but not yet run on the unpublished branch |
+| .NET 9.0.20 / EF Core 9.0.20 / SQL Server 2022 | 32 local tests including 16 actual SQL Server cases; no skips. CI configured but not run on this unpublished branch |
+| .NET 10.0.12 / EF Core 10.0.12 / SQL Server 2022 | Same 32 local tests including 16 SQL cases; no skips. Fixed v2 vectors cover Unicode and null/empty framing on both targets |
 | PostgreSQL / MySQL | Experimental lock-query paths; no integration result claimed |
-| EF Core 6–8 or 10 / .NET 10 | Not tested or advertised as supported by this package |
+| EF Core 6–8, .NET 10 with EF Core 9, or other runtime/provider combinations | Not tested or advertised as supported by this package |
 
-Before .NET 9's support window ends, move the library, example and test provider together to .NET 10/EF Core 10 on a separate branch; rerun the SQL, SMTP, hash-compatibility and package checks before changing this matrix. Do not silently rehash existing data during that upgrade.
+The stable SDK, library, example and test provider now build both reviewed pairs. .NET 9 is a short remaining maintenance target; new integrations should use the .NET 10 asset. Use serviced runtimes and rerun the application's provider/migration checks when changing EF versions. Do not silently rehash existing audit data during an upgrade.
 
 SQL Server uses transaction-scoped `sp_getapplock` plus a chain-row update lock. PostgreSQL and MySQL have provider-specific row-lock queries but lack integration coverage here; treat them as experimental and validate their transaction and concurrent first-row behavior before use.
 

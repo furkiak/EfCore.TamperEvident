@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0-preview.2 — unreleased
+
+- Add a .NET 10/EF Core 10.0.12 asset while preserving .NET 9 with EF Core 9.0.20. Match the test and runnable sample providers to each target; build with a stable .NET 10 SDK.
+- Preserve preview.1's v2 framing, public audit API and model mapping. This does not migrate 1.x history or validate arbitrary application migrations.
+- Pin independent UTF-8/HMAC vectors for Unicode fields and the distinction between null and an empty string. Verify a stored vector and detect its null-to-empty mutation against actual SQL Server on both targets.
+- Run the dispatcher restart worker on the same target as its test, with an optional test-only dotnet host override for an isolated serviced runtime.
+- Fail builds on warnings and known NuGet audit findings, including transitive dependencies. Remove the redundant System.Text.Json reference instead of suppressing SDK pruning warnings.
+- Configure separate .NET 9/10 CI jobs and document runtime/provider boundaries. Local tests passed 32/32 on each target, including 16 SQL cases each; remote CI/public NuGet remain open.
+
 ## 2.0.0-preview.1 — unreleased
 
 This preview changes the audit format and database schema. It must not be installed over a 1.x audit history without a reviewed migration.

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
@@ -9,7 +9,7 @@
     <Authors>Furkan Akca</Authors>
     <PackageTags>efcore;audit;security;tamper-evident;hmac;sqlserver</PackageTags>
     <Description>Transaction-coupled EF Core audit logs with HMAC hash chains, durable external anchor queue and explicit verification limits.</Description>
-    <Version>2.0.0-preview.1</Version>
+    <Version>2.0.0-preview.2</Version>
     <RepositoryUrl>https://github.com/furkiak/EfCore.TamperEvident</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
@@ -19,9 +19,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.16" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.16" />
-    <PackageReference Include="System.Text.Json" Version="9.0.16" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="$(EfCoreVersion)" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="$(EfCoreVersion)" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.400" PrivateAssets="all" />
   </ItemGroup>
 
@@ -31,6 +30,7 @@
     <None Include="..\docs\architecture.svg" Pack="true" PackagePath="docs/" />
     <None Include="..\docs\KEY_LIFECYCLE.md" Pack="true" PackagePath="docs/" />
     <None Include="..\docs\LOCAL_VALIDATION.md" Pack="true" PackagePath="docs/" />
+    <None Include="..\docs\RUNTIME_SUPPORT.md" Pack="true" PackagePath="docs/" />
   </ItemGroup>
 
 </Project>
