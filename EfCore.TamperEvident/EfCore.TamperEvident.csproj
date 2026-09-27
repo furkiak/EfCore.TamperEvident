@@ -29,6 +29,8 @@
     <None Include="..\README.md" Pack="true" PackagePath="/" />
     <None Include="..\LICENSE" Pack="true" PackagePath="/" />
     <None Include="..\docs\architecture.svg" Pack="true" PackagePath="docs/" />
+    <None Include="..\docs\KEY_LIFECYCLE.md" Pack="true" PackagePath="docs/" />
+    <None Include="..\docs\LOCAL_VALIDATION.md" Pack="true" PackagePath="docs/" />
   </ItemGroup>
 
 </Project>

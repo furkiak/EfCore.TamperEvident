@@ -3,6 +3,8 @@ using System.Globalization;
 using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Models;
 using EfCore.TamperEvident.Services;
+using EfCore.TamperEvident.Extensions;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace EfCore.TamperEvident.Tests
@@ -104,6 +106,19 @@ namespace EfCore.TamperEvident.Tests
             {
                 HmacSecretKey = System.Convert.ToBase64String(new byte[32])
             }.Validate());
+        }
+
+        [Fact]
+        public void AuditRegistrationRejectsMissingWeakAndUniformKeysWithoutPrintingThem()
+        {
+            foreach (var key in new[] { "", "not-base64", Convert.ToBase64String(new byte[16]),
+                Convert.ToBase64String(Enumerable.Repeat((byte)17, 32).ToArray()) })
+            {
+                var error = Assert.Throws<InvalidOperationException>(() =>
+                    new DbContextOptionsBuilder<TestDbContext>().UseTamperEvidentAudit(x => x.HmacSecretKey = key));
+                if (key.Length > 0) Assert.DoesNotContain(key, error.Message);
+            }
+            new DbContextOptionsBuilder<TestDbContext>().UseTamperEvidentAudit(x => x.HmacSecretKey = TestKeys.Key);
         }
 
         [Fact]

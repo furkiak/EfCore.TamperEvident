@@ -9,6 +9,7 @@ public static class ModelBuilderExtensions
     {
         builder.Entity<AuditLog>(entity =>
         {
+            entity.ToTable("AuditLogs");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TableName).HasMaxLength(256);
             entity.Property(x => x.RecordId).HasMaxLength(2048);
@@ -19,12 +20,14 @@ public static class ModelBuilderExtensions
         });
         builder.Entity<AuditChainState>(entity =>
         {
+            entity.ToTable("AuditChainStates");
             entity.HasKey(x => x.TableName);
             entity.Property(x => x.TableName).HasMaxLength(256);
             entity.Property(x => x.LastHash).HasMaxLength(80);
         });
         builder.Entity<PendingAnchor>(entity =>
         {
+            entity.ToTable("PendingAnchors");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TableName).HasMaxLength(256);
             entity.Property(x => x.AnchorHash).HasMaxLength(80);

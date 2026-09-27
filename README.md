@@ -31,9 +31,20 @@ This is **tamper evidence**, not a guarantee that the database cannot be changed
 
 Generate a key once with `RandomNumberGenerator.GetBytes(32)`, convert it with `Convert.ToBase64String`, and store it in a production secret manager. Do not rotate it without preserving the previous key and a verified migration strategy: existing hashes require the original key.
 
+The [key lifecycle plan](docs/KEY_LIFECYCLE.md) explains host secret-manager integration, operational key identities, separate-chain rotation and read-only verification of 1.x history. Per-row key rotation and in-place 1.x migration are not supported.
+
 ## Quick start
 
 Build the unpublished preview locally with `dotnet pack -c Release`. For the published 1.0.1 package, use its matching tag and documentation.
+
+For a complete runnable example against an **isolated test SQL Server**, run:
+
+```powershell
+$env:EFCORE_AUDIT_SQLSERVER='Server=.\SQLEXPRESS;Integrated Security=true;TrustServerCertificate=true;Encrypt=true'
+dotnet run --project samples/SqlServerDemo -c Release
+```
+
+The sample creates a uniquely named `AuditDemo_*` database, inserts one synthetic customer, verifies the internal chain and pending anchor, and deletes its database in `finally`. Expected output includes `Business rows: 1; audit rows: 1` and `Pending anchors: 1; delivered: 0`. It does not send email or verify an independent anchor. Its ephemeral random key is never printed; use a retained secret-manager key and reviewed migrations for a retained application database. The test-only certificate exception is not a production TLS recommendation.
 
 ```csharp
 using EfCore.TamperEvident.Extensions;
@@ -91,7 +102,13 @@ var sent = await new AnchorDispatcher(dbContext, auditOptions)
     .DispatchPendingAsync(cancellationToken: stoppingToken);
 ```
 
-You can inject an `IAnchorPublisher` via `CustomAnchorPublisher` instead of SMTP. Delivery errors leave anchors pending for retry. Delivery is at least once, so your external receiver should tolerate duplicate hashes. Keep the receiver and its retained messages outside the audited database's administrative boundary. Monitor pending age and failures: a queued hash alone does not protect against a full database rewrite.
+You can inject an `IAnchorPublisher` via `CustomAnchorPublisher` instead of SMTP. Implement its `AnchorDelivery` overload to receive the persistent `PendingAnchor.Id` and cancellation token; the legacy three-argument overload remains compatible. SMTP includes that ID in `X-Audit-Anchor-Id` and the body, and the public anchor hash in `X-Audit-Anchor-Hash`. The HMAC secret is never mailed.
+
+Delivery errors leave anchors pending for retry. Delivery is at least once: SMTP may accept a message before saving its delivery marker fails, so the receiver must deduplicate by `(deployment/chain identity, AnchorDelivery.Id)` or, for a legacy publisher, by the table and hash. SMTP acceptance is not final mailbox delivery or independent retention. Run one dispatcher per database to preserve the observed queue order; multiple concurrent dispatchers are not coordinated. Keep the receiver and its retained messages outside the audited database's administrative boundary.
+
+Monitor `PendingAnchors` where `DeliveredAtUtc == null`, oldest `CreatedAtUtc`, `AttemptCount` and `LastError`. The dispatcher records failure types and can emit structured attempt logs through `LoggerFactory`. Alert on queue age or repeated failures; it does not schedule itself. A queued hash alone does not protect against a full database rewrite, and writes below the threshold are unanchored until an anchor is created and independently retained.
+
+SMTP requires TLS by default and has a configurable 30-second attempt timeout (`SmtpTimeoutSeconds`). `AllowUnencryptedLoopbackSmtp=true` is restricted to literal loopback IPs for a disposable local sink; DNS names and remote IPs are rejected. The test suite uses this explicit mode with a real TCP receiver and no external email account. TLS/authentication with a deployed mail service and that service's retention policy remain operational acceptance checks.
 
 To verify, obtain hashes from that external receiver in **chain order** and pass them to `AuditVerifier.VerifyTableIntegrityAsync(tableName, externalHashes)`. The verifier does not alter the supplied list; missing, extra or out-of-order hashes fail verification. An empty audit history is **inconclusive**, and a missing or mismatched chain state or external anchor is a failure. A v1 chain is rejected by the v2 verifier until an explicit migration is designed and reviewed.
 
@@ -104,6 +121,16 @@ dotnet test
 ```
 
 The first command runs portable unit tests; the second additionally creates and deletes uniquely named `AuditIt_*` databases on your **test** SQL Server. It checks sync/async saves, failure rollback, `SaveChanges(false)` rejection, caller-owned transactions, concurrent writers, retry configuration, verification and anchor retries. Do not point this environment variable at production.
+
+The local SMTP tests use actual loopback TCP/SMTP, including a closed port, dispatcher process restart, default-TLS rejection, and replay of a stable anchor ID after an injected database acknowledgement failure. They prove local transport/outbox behavior; they do not prove external mailbox delivery or production operation. Local evidence and exact acceptance mapping are in [LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md).
+
+| Target | Evidence / support |
+| --- | --- |
+| .NET 9 / EF Core 9.0.16 / SQL Server 2022 | Locally verified; GitHub CI configured for the same target but not yet run on the unpublished branch |
+| PostgreSQL / MySQL | Experimental lock-query paths; no integration result claimed |
+| EF Core 6–8 or 10 / .NET 10 | Not tested or advertised as supported by this package |
+
+Before .NET 9's support window ends, move the library, example and test provider together to .NET 10/EF Core 10 on a separate branch; rerun the SQL, SMTP, hash-compatibility and package checks before changing this matrix. Do not silently rehash existing data during that upgrade.
 
 SQL Server uses transaction-scoped `sp_getapplock` plus a chain-row update lock. PostgreSQL and MySQL have provider-specific row-lock queries but lack integration coverage here; treat them as experimental and validate their transaction and concurrent first-row behavior before use.
 

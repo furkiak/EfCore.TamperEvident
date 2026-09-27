@@ -11,6 +11,11 @@ This preview changes the audit format and database schema. It must not be instal
 - Require application-supplied base64 key material and reject empty, short or uniform keys.
 - Add nested deterministic JSON serialization and default redaction for common secret fields.
 - Persist external anchors in a transactional outbox; retry via `AnchorDispatcher`.
+- Deliver a stable outbox ID through an optional compatible publisher overload and SMTP headers; log pending failures and count each delivery attempt once.
+- Keep SMTP TLS enabled by default, bound send attempts and restrict plaintext test SMTP to literal loopback IPs.
+- Verify real local SMTP refusal, restart/retry and acknowledgement-failure replay against SQL Server.
+- Add a runnable disposable SQL Server quick start and an explicit historical-key verification/rotation plan.
+- Map all three internal audit tables explicitly so contexts without audit DbSet properties work as documented.
 - Fail closed on missing audit history, missing chain state and unmatched external anchors.
 - Add SQL Server integration tests for concurrency, rollback, cancellation, delivery failure and retry configuration.
 - Correct the package's README, metadata, claims and support limits.

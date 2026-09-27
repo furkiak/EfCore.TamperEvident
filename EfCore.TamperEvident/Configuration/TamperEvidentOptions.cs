@@ -46,6 +46,9 @@ namespace EfCore.TamperEvident.Configuration
         public string? SmtpUser { get; set; }
         public string? SmtpPassword { get; set; }
         public string? AnchorEmailTo { get; set; }
+        public int SmtpTimeoutSeconds { get; set; } = 30;
+        // Test sinks only. A remote host must always use TLS.
+        public bool AllowUnencryptedLoopbackSmtp { get; set; }
 
         public void Validate()
         {
@@ -59,6 +62,10 @@ namespace EfCore.TamperEvident.Configuration
             }
             finally { Array.Clear(key, 0, key.Length); }
             if (AnchorThreshold < 1) throw new InvalidOperationException("AnchorThreshold must be positive.");
+            if (SmtpTimeoutSeconds < 1) throw new InvalidOperationException("SmtpTimeoutSeconds must be positive.");
+            if (AllowUnencryptedLoopbackSmtp &&
+                (!System.Net.IPAddress.TryParse(SmtpHost, out var address) || !System.Net.IPAddress.IsLoopback(address)))
+                throw new InvalidOperationException("Unencrypted test SMTP requires a literal loopback IP address.");
         }
     }
 }

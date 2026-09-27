@@ -3,6 +3,8 @@ using EfCore.TamperEvident.Extensions;
 using EfCore.TamperEvident.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using EfCore.TamperEvident.Models;
 
 namespace EfCore.TamperEvident.Tests;
 
@@ -238,6 +240,7 @@ public sealed class SqlServerIntegrationTests
             Assert.Equal(0, await context.SaveChangesAsync());
             Assert.Null(context.Database.CurrentTransaction);
             Assert.Empty(await context.AuditLogs.ToListAsync());
+            Assert.Equal(System.Data.ConnectionState.Closed, context.Database.GetDbConnection().State);
         }
         finally { await context.Database.EnsureDeletedAsync(); }
     }
@@ -301,6 +304,8 @@ public sealed class SqlServerIntegrationTests
             context.TestEntities.Add(new TestEntity { Name = "cancelled", Price = 1 });
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => context.SaveChangesAsync(cancel.Token));
+            Assert.Null(context.Database.CurrentTransaction);
+            Assert.Equal(System.Data.ConnectionState.Closed, context.Database.GetDbConnection().State);
             await using var check = new TestDbContext(setup.DbOptions);
             Assert.Empty(await check.TestEntities.ToListAsync());
             Assert.Empty(await check.AuditLogs.ToListAsync());
@@ -367,6 +372,145 @@ public sealed class SqlServerIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServer")]
+    public async Task RealSmtpFailureSurvivesProcessRestartAndDeliversStableIdentity()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server, x => x.AnchorThreshold = 1);
+        var port = LoopbackSmtpSink.ReserveClosedPort();
+        var smtp = SmtpAnchorPublisherTests.LocalOptions(port);
+        await using var owner = new TestDbContext(setup.DbOptions);
+        await owner.Database.EnsureCreatedAsync();
+        try
+        {
+            Guid anchorId;
+            string anchorHash;
+            await using (var writer = new TestDbContext(setup.DbOptions))
+            {
+                writer.TestEntities.Add(new TestEntity { Name = "smtp-restart", Price = 1 });
+                await writer.SaveChangesAsync();
+                var queued = await writer.PendingAnchors.SingleAsync();
+                anchorId = queued.Id;
+                anchorHash = queued.AnchorHash;
+            }
+            await RunDispatcherProcessAsync(setup.Connection, smtp, expectedDelivered: 0);
+            await using (var failedContext = new TestDbContext(setup.DbOptions))
+            {
+                var failed = await failedContext.PendingAnchors.SingleAsync();
+                Assert.Equal(anchorId, failed.Id);
+                Assert.Null(failed.DeliveredAtUtc);
+                Assert.Equal(1, failed.AttemptCount);
+                Assert.Equal("SmtpException", failed.LastError);
+            }
+            await using var sink = new LoopbackSmtpSink(port);
+            await RunDispatcherProcessAsync(setup.Connection, smtp, expectedDelivered: 1);
+            await using var check = new TestDbContext(setup.DbOptions);
+            var delivered = await check.PendingAnchors.SingleAsync();
+            Assert.Equal(anchorId, delivered.Id);
+            Assert.Equal(anchorHash, delivered.AnchorHash);
+            Assert.Equal(2, delivered.AttemptCount);
+            Assert.NotNull(delivered.DeliveredAtUtc);
+            Assert.Null(delivered.LastError);
+            var message = Assert.Single(sink.Messages);
+            Assert.Contains("X-Audit-Anchor-Id: " + anchorId.ToString("D"), message);
+            Assert.Contains("X-Audit-Anchor-Hash: " + anchorHash, message);
+            Assert.Contains(anchorHash, LoopbackSmtpSink.DecodeBody(message));
+            Assert.DoesNotContain(TestKeys.Key, message + LoopbackSmtpSink.DecodeBody(message));
+            Assert.Equal(0, await new AnchorDispatcher(check, smtp).DispatchPendingAsync());
+            Assert.Single(sink.Messages);
+        }
+        finally { await owner.Database.EnsureDeletedAsync(); }
+    }
+
+    private static async Task RunDispatcherProcessAsync(string connection, TamperEvidentOptions smtp, int expectedDelivered)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null && !File.Exists(Path.Combine(directory.FullName, "samples", "SqlServerDemo", "SqlServerDemo.csproj")))
+            directory = directory.Parent;
+        Assert.NotNull(directory);
+        var configuration = AppContext.BaseDirectory.Contains(Path.DirectorySeparatorChar + "Release" + Path.DirectorySeparatorChar)
+            ? "Release" : "Debug";
+        var worker = Path.Combine(directory.FullName, "samples", "SqlServerDemo", "bin", configuration, "net9.0", "SqlServerDemo.dll");
+        Assert.True(File.Exists(worker), "Build the test project and its dispatcher worker before running integration tests.");
+        var start = new System.Diagnostics.ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        start.ArgumentList.Add(worker);
+        start.ArgumentList.Add("--dispatch-test-anchor");
+        start.Environment["AUDIT_DEMO_DISPATCH_CONNECTION"] = connection;
+        start.Environment["AUDIT_DEMO_DISPATCH_KEY"] = smtp.HmacSecretKey;
+        start.Environment["AUDIT_DEMO_DISPATCH_PORT"] = smtp.SmtpPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            throw;
+        }
+        Assert.Equal(0, process.ExitCode);
+        Assert.Equal("", await error);
+        Assert.Contains("Dispatched anchors: " + expectedDelivered, await output);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServer")]
+    public async Task SmtpAcceptedButDatabaseAcknowledgementFailedReplaysTheSameAnchorId()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server, x => x.AnchorThreshold = 1);
+        await using var sink = new LoopbackSmtpSink();
+        var smtp = SmtpAnchorPublisherTests.LocalOptions(sink.Port);
+        await using var owner = new TestDbContext(setup.DbOptions);
+        await owner.Database.EnsureCreatedAsync();
+        try
+        {
+            owner.TestEntities.Add(new TestEntity { Name = "ack-failure", Price = 1 });
+            await owner.SaveChangesAsync();
+            var id = (await owner.PendingAnchors.SingleAsync()).Id;
+            var failure = new FailFirstDeliveryAcknowledgement();
+            var failingOptions = new DbContextOptionsBuilder<TestDbContext>(setup.DbOptions)
+                .AddInterceptors(failure).Options;
+            await using (var failing = new TestDbContext(failingOptions))
+                Assert.Equal(0, await new AnchorDispatcher(failing, smtp).DispatchPendingAsync());
+            Assert.True(failure.Triggered);
+            Assert.Single(sink.Messages);
+            await using (var restarted = new TestDbContext(setup.DbOptions))
+            {
+                var pending = await restarted.PendingAnchors.SingleAsync();
+                Assert.Null(pending.DeliveredAtUtc);
+                Assert.Equal(1, pending.AttemptCount);
+                Assert.Equal("DbUpdateException", pending.LastError);
+                Assert.Equal(1, await new AnchorDispatcher(restarted, smtp).DispatchPendingAsync());
+                Assert.Equal(2, pending.AttemptCount);
+                Assert.NotNull(pending.DeliveredAtUtc);
+            }
+            Assert.Equal(2, sink.Messages.Count);
+            Assert.All(sink.Messages, message => Assert.Contains("X-Audit-Anchor-Id: " + id.ToString("D"), message));
+        }
+        finally { await owner.Database.EnsureDeletedAsync(); }
+    }
+
+    private sealed class FailFirstDeliveryAcknowledgement : SaveChangesInterceptor
+    {
+        public bool Triggered { get; private set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!Triggered && eventData.Context!.ChangeTracker.Entries<PendingAnchor>()
+                .Any(x => x.Entity.DeliveredAtUtc != null))
+            {
+                Triggered = true;
+                throw new DbUpdateException("Injected delivery acknowledgement failure.");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServer")]
     public async Task CompositeKeysAndSchemasHaveIndependentChains()
     {
         var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
@@ -383,24 +527,61 @@ public sealed class SqlServerIntegrationTests
             {
                 TenantId = "north", ExternalId = "42", Value = "ticket"
             });
+            context.SalesEntries.Add(new SalesEntry
+            {
+                TenantId = "north", ExternalId = "43", Value = "second-sale"
+            });
             await context.SaveChangesAsync();
             await using var check = new TestDbContext(setup.DbOptions);
             var logs = await check.AuditLogs.ToListAsync();
-            Assert.Equal(2, logs.Count);
+            Assert.Equal(3, logs.Count);
             Assert.Contains(logs, x => x.TableName == "sales.Entries");
             Assert.Contains(logs, x => x.TableName == "support.Entries");
             Assert.All(logs, x =>
             {
-                Assert.Equal("GENESIS", x.PreviousHash);
-                Assert.Contains("\"ExternalId\":\"42\"", x.RecordId);
+                Assert.Contains("\"ExternalId\":", x.RecordId);
                 Assert.Contains("\"TenantId\":\"north\"", x.RecordId);
             });
+            var sales = logs.Where(x => x.TableName == "sales.Entries").OrderBy(x => x.TimestampTicks).ToList();
+            Assert.Equal(2, sales.Select(x => x.RecordId).Distinct().Count());
+            Assert.Equal("GENESIS", sales[0].PreviousHash);
+            Assert.Equal(sales[0].CurrentHash, sales[1].PreviousHash);
+            Assert.Equal("GENESIS", logs.Single(x => x.TableName == "support.Entries").PreviousHash);
             Assert.True((await new AuditVerifier(check, setup.AuditOptions)
                 .VerifyTableIntegrityAsync("sales.Entries")).IsValid);
             Assert.True((await new AuditVerifier(check, setup.AuditOptions)
                 .VerifyTableIntegrityAsync("support.Entries")).IsValid);
         }
         finally { await context.Database.EnsureDeletedAsync(); }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServer")]
+    public async Task AuditModelsWorkWithoutAuditDbSetProperties()
+    {
+        var server = ServerConnection ?? throw new InvalidOperationException("Set EFCORE_AUDIT_SQLSERVER for SQL integration tests.");
+        var setup = CreateOptions(server, x => x.AnchorThreshold = 1);
+        var builder = new DbContextOptionsBuilder<MinimalAuditContext>().UseSqlServer(setup.Connection);
+        builder.UseTamperEvidentAudit(x => { x.HmacSecretKey = TestKeys.Key; x.AnchorThreshold = 1; });
+        await using var context = new MinimalAuditContext(builder.Options);
+        await context.Database.EnsureCreatedAsync();
+        try
+        {
+            context.TestEntities.Add(new TestEntity { Name = "minimal-readme-context", Price = 1 });
+            await context.SaveChangesAsync();
+            Assert.Single(await context.Set<AuditLog>().ToListAsync());
+            Assert.Single(await context.Set<AuditChainState>().ToListAsync());
+            Assert.Single(await context.Set<PendingAnchor>().ToListAsync());
+            Assert.True((await new AuditVerifier(context, setup.AuditOptions)
+                .VerifyTableIntegrityAsync("TestEntities")).IsValid);
+        }
+        finally { await context.Database.EnsureDeletedAsync(); }
+    }
+
+    private sealed class MinimalAuditContext(DbContextOptions<MinimalAuditContext> options) : DbContext(options)
+    {
+        public DbSet<TestEntity> TestEntities => Set<TestEntity>();
+        protected override void OnModelCreating(ModelBuilder builder) => builder.AddTamperEvidentModels();
     }
 
     private sealed class TestPublisher : IAnchorPublisher
