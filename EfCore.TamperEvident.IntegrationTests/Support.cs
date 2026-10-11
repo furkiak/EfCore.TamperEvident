@@ -73,8 +73,11 @@ namespace EfCore.TamperEvident.IntegrationTests
                     options.UseNpgsql(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });
                     break;
                 case Provider.MySql:
-                    options.UseMySql(_connectionString, ServerVersion.Create(10, 11, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MariaDb),
-                        o => { if (_retry) o.EnableRetryOnFailure(); });
+                    // TE_TEST_MYSQL_FLAVOR=mysql selects MySQL 8; the default is MariaDB.
+                    var flavor = string.Equals(Environment.GetEnvironmentVariable("TE_TEST_MYSQL_FLAVOR"), "mysql", StringComparison.OrdinalIgnoreCase)
+                        ? ServerVersion.Create(8, 4, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MySql)
+                        : ServerVersion.Create(10, 11, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MariaDb);
+                    options.UseMySql(_connectionString, flavor, o => { if (_retry) o.EnableRetryOnFailure(); });
                     break;
                 default:
                     options.UseSqlServer(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });

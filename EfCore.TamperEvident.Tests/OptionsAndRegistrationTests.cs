@@ -21,7 +21,7 @@ namespace EfCore.TamperEvident.Tests
         [Fact]
         public void TheOldPublicDefaultKey_IsRefused()
         {
-            var options = new TamperEvidentOptions { HmacSecretKey = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT" };
+            var options = new TamperEvidentOptions { HmacSecretKey = TamperEvidentOptions.Version1DefaultKey };
             var ex = Assert.Throws<InvalidOperationException>(options.Validate);
             Assert.Contains("default key", ex.Message);
         }

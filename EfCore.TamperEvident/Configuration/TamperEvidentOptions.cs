@@ -12,8 +12,12 @@ namespace EfCore.TamperEvident.Configuration
         /// <summary>The shortest accepted <see cref="HmacSecretKey"/>. Use 32 or more random characters.</summary>
         public const int MinimumSecretKeyLength = 16;
 
-        // The default key that 1.x shipped with. It is public knowledge and therefore refused.
-        internal const string LegacyDefaultKey = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT";
+        /// <summary>
+        /// The key that 1.x used when no secret was configured. It is public knowledge, so it is refused as
+        /// <see cref="HmacSecretKey"/>. It exists only so that chains written with it can still be verified:
+        /// add it to <see cref="AdditionalHmacKeys"/> after switching to a real secret.
+        /// </summary>
+        public const string Version1DefaultKey = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT";
 
         /// <summary>
         /// The secret that every hash is keyed with. It must stay outside of the audited database
@@ -130,7 +134,7 @@ namespace EfCore.TamperEvident.Configuration
                     "that is stored outside of the audited database (for example: openssl rand -base64 48).");
             }
 
-            if (string.Equals(HmacSecretKey, LegacyDefaultKey, StringComparison.Ordinal))
+            if (string.Equals(HmacSecretKey, Version1DefaultKey, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
                     $"{nameof(TamperEvidentOptions)}.{nameof(HmacSecretKey)} is set to the default key that older versions " +

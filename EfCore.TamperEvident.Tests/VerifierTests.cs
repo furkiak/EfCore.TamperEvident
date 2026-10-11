@@ -55,6 +55,23 @@ namespace EfCore.TamperEvident.Tests
         }
 
         [Fact]
+        public async Task AnEmptyChainHead_IsValid()
+        {
+            // A save that failed after its chain head was created leaves a head without entries behind.
+            using var harness = new Harness();
+            await using (var db = harness.CreateUnauditedContext())
+            {
+                db.AuditChainStates.Add(new AuditChainState { TableName = "Customers", LastHash = "GENESIS" });
+                await db.SaveChangesAsync();
+            }
+
+            var result = await VerifyAsync(harness);
+
+            Assert.True(result.IsValid, result.Message);
+            Assert.Equal(0, result.RecordsChecked);
+        }
+
+        [Fact]
         public async Task ModifiedPayload_IsDetected()
         {
             using var harness = await SeededAsync();
@@ -490,7 +507,7 @@ namespace EfCore.TamperEvident.Tests
         public async Task VersionOneDefaultKey_CanStillVerifyOldChains_ThroughAdditionalKeys()
         {
             // 1.x shipped a public default key. Upgrading means configuring a new key and keeping the old one for verification.
-            const string legacyDefault = "Th1s!sA_D3f4u1t_0bfu5c4t10n_K3y_For_HMAC_TAMPER_EVIDENT";
+            const string legacyDefault = TamperEvidentOptions.Version1DefaultKey;
             using var harness = new Harness();
             var first = LegacyLog("GENESIS", "Customers", "1", "Added", null, "{}", 1000, System.Text.Encoding.UTF8.GetBytes(legacyDefault));
 

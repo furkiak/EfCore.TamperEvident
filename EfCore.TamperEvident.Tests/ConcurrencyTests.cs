@@ -224,7 +224,10 @@ namespace EfCore.TamperEvident.Tests
             await using var verify = CreateContext();
             Assert.Equal(0, await verify.Customers.CountAsync());
             Assert.Empty(await verify.AuditLogs.ToListAsync());
-            Assert.Empty(await verify.AuditChainStates.ToListAsync());
+
+            // The (empty) chain head is created by its own statement before the transaction, so it survives the rollback.
+            Assert.All(await verify.AuditChainStates.ToListAsync(), head => Assert.Equal(0, head.LastSequence));
+            Assert.True((await new AuditVerifier(verify, _options).VerifyAllAsync()).IsValid);
         }
 
         [Fact]
