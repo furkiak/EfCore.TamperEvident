@@ -68,6 +68,19 @@ namespace EfCore.TamperEvident.Interceptors
                 return result;
             }
 
+            if (RequiresStrategyTakeover(context!, session))
+            {
+                _sessions.Remove(context!);
+                var saved = context!.Database.CreateExecutionStrategy().Execute(() =>
+                {
+                    using var transaction = context.Database.BeginTransaction();
+                    var count = context.SaveChanges();
+                    transaction.Commit();
+                    return count;
+                });
+                return InterceptionResult<int>.SuppressWithResult(saved);
+            }
+
             try
             {
                 BeginTransaction(context!, session);
@@ -92,6 +105,19 @@ namespace EfCore.TamperEvident.Interceptors
                 return result;
             }
 
+            if (RequiresStrategyTakeover(context!, session))
+            {
+                _sessions.Remove(context!);
+                var saved = await context!.Database.CreateExecutionStrategy().ExecuteAsync(async ct =>
+                {
+                    await using var transaction = await context.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+                    var count = await context.SaveChangesAsync(ct).ConfigureAwait(false);
+                    await transaction.CommitAsync(ct).ConfigureAwait(false);
+                    return count;
+                }, cancellationToken).ConfigureAwait(false);
+                return InterceptionResult<int>.SuppressWithResult(saved);
+            }
+
             try
             {
                 await BeginTransactionAsync(context!, session, cancellationToken).ConfigureAwait(false);
@@ -104,6 +130,19 @@ namespace EfCore.TamperEvident.Interceptors
 
             return result;
         }
+
+        /// <summary>
+        /// EF Core calls this interceptor outside of the execution strategy but saves inside it. A strategy that retries
+        /// on failure (<c>EnableRetryOnFailure</c>) refuses to start when a transaction already exists, so a transaction
+        /// cannot simply be opened here. Instead the whole save, together with its transaction, is run as one retriable
+        /// unit and the original save is suppressed. The nested save then runs inside that transaction, where the
+        /// audit entries are written just like in a caller-owned transaction.
+        /// </summary>
+        private static bool RequiresStrategyTakeover(DbContext context, AuditSession session) =>
+            session.Info.IsRelational
+            && context.Database.CurrentTransaction is null
+            && System.Transactions.Transaction.Current is null
+            && context.Database.CreateExecutionStrategy().RetriesOnFailure;
 
         private AuditSession? Prepare(DbContext context)
         {
@@ -251,30 +290,31 @@ namespace EfCore.TamperEvident.Interceptors
                     chains[table] = ChainStateStore.Lock(context, session.Info, table, now.UtcDateTime);
                 }
 
-                var anchors = Seal(context, session, chains, now);
+                var batch = Seal(session, chains, now);
 
-                var suspended = SuspendPending(session);
-                try
+                if (session.Info.Commands is { } commands)
                 {
-                    context.SaveChanges();
+                    AuditWriter.Write(context, commands, batch.Logs, chains.Values.ToList());
                 }
-                finally
+                else
                 {
-                    ResumePending(suspended);
+                    SaveThroughChangeTracker(context, session, batch.Logs, () => context.SaveChanges());
                 }
 
                 if (session.OwnsTransaction)
                 {
                     session.Transaction!.Commit();
+                    session.Transaction.Dispose();
+                    session.Transaction = null;
                 }
 
                 _sessions.Remove(context);
-                ScheduleAnchors(context, session, anchors).GetAwaiter().GetResult();
+                ScheduleAnchors(context, session, batch.Anchors).GetAwaiter().GetResult();
             }
-            catch
+            catch (Exception ex)
             {
                 Abort(context, session);
-                throw;
+                throw Wrap(ex);
             }
 
             return result;
@@ -301,42 +341,74 @@ namespace EfCore.TamperEvident.Interceptors
                         .ConfigureAwait(false);
                 }
 
-                var anchors = Seal(context, session, chains, now);
+                var batch = Seal(session, chains, now);
 
-                var suspended = SuspendPending(session);
-                try
+                if (session.Info.Commands is { } commands)
                 {
-                    await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    await AuditWriter.WriteAsync(context, commands, batch.Logs, chains.Values.ToList(), cancellationToken).ConfigureAwait(false);
                 }
-                finally
+                else
                 {
-                    ResumePending(suspended);
+                    var suspended = SuspendPending(session);
+                    try
+                    {
+                        context.Set<AuditLog>().AddRange(batch.Logs);
+                        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        ResumePending(suspended);
+                    }
                 }
 
                 if (session.OwnsTransaction)
                 {
                     await session.Transaction!.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    await session.Transaction.DisposeAsync().ConfigureAwait(false);
+                    session.Transaction = null;
                 }
 
                 _sessions.Remove(context);
-                await ScheduleAnchors(context, session, anchors, cancellationToken).ConfigureAwait(false);
+                await ScheduleAnchors(context, session, batch.Anchors, cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
                 await AbortAsync(context, session).ConfigureAwait(false);
-                throw;
+                throw Wrap(ex);
             }
 
             return result;
+        }
+
+        // Cancellation is passed through; everything else becomes a non-transient AuditTrailException.
+        private static Exception Wrap(Exception exception) => exception switch
+        {
+            OperationCanceledException or AuditTrailException => exception,
+            _ => new AuditTrailException(
+                "The audit trail could not be written, so the change was not persisted: " + exception.Message, exception)
+        };
+
+        // The in-memory provider has no SQL: the entries go through the change tracker like any other entity.
+        private static void SaveThroughChangeTracker(DbContext context, AuditSession session, List<AuditLog> logs, Action save)
+        {
+            var suspended = SuspendPending(session);
+            try
+            {
+                context.Set<AuditLog>().AddRange(logs);
+                save();
+            }
+            finally
+            {
+                ResumePending(suspended);
+            }
         }
 
         // Chain heads are always locked in the same order, which rules out deadlocks between concurrent saves.
         private static List<string> OrderedTables(AuditSession session) =>
             session.Preps.Select(p => p.TableName).Distinct(StringComparer.Ordinal).OrderBy(t => t, StringComparer.Ordinal).ToList();
 
-        /// <summary>Chains the captured changes onto the (locked) chain heads and adds the audit entries to the context.</summary>
-        private List<AuditAnchor> Seal(
-            DbContext context, AuditSession session, Dictionary<string, AuditChainState> chains, DateTimeOffset now)
+        /// <summary>Chains the captured changes onto the (locked) chain heads.</summary>
+        private SealedBatch Seal(AuditSession session, Dictionary<string, AuditChainState> chains, DateTimeOffset now)
         {
             var key = _keys.CurrentKey;
             var keyId = _keys.CurrentKeyId;
@@ -360,6 +432,7 @@ namespace EfCore.TamperEvident.Interceptors
                     sequence++;
                     var log = new AuditLog
                     {
+                        Id = Guid.NewGuid(),
                         TableName = prep.TableName,
                         RecordId = prep.RecordId!,
                         ActionType = prep.Action,
@@ -392,8 +465,20 @@ namespace EfCore.TamperEvident.Interceptors
                 chain.Mac = AuditHasher.ComputeStateMac(key, chain.TableName, chain.LastHash, chain.LastSequence, keyId);
             }
 
-            context.Set<AuditLog>().AddRange(logs);
-            return anchors;
+            return new SealedBatch(logs, anchors);
+        }
+
+        private sealed class SealedBatch
+        {
+            public SealedBatch(List<AuditLog> logs, List<AuditAnchor> anchors)
+            {
+                Logs = logs;
+                Anchors = anchors;
+            }
+
+            public List<AuditLog> Logs { get; }
+
+            public List<AuditAnchor> Anchors { get; }
         }
 
         // SaveChanges(acceptAllChangesOnSuccess: false) leaves the audited entities pending. They must not be saved

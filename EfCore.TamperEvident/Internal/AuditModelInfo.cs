@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Models;
@@ -15,7 +16,7 @@ namespace EfCore.TamperEvident.Internal
     {
         private static readonly ConditionalWeakTable<IModel, AuditModelInfo> Cache = new();
 
-        private AuditModelInfo(DatabaseProvider requestedProvider, DatabaseProvider provider, bool isRelational, ChainStateCommands? commands)
+        private AuditModelInfo(DatabaseProvider requestedProvider, DatabaseProvider provider, bool isRelational, AuditSqlCommands? commands)
         {
             RequestedProvider = requestedProvider;
             Provider = provider;
@@ -30,7 +31,7 @@ namespace EfCore.TamperEvident.Internal
         public bool IsRelational { get; }
 
         /// <summary>The SQL used to lock and create chain heads. <c>null</c> for non-relational providers.</summary>
-        public ChainStateCommands? Commands { get; }
+        public AuditSqlCommands? Commands { get; }
 
         public static AuditModelInfo Resolve(DbContext context, TamperEvidentOptions options)
         {
@@ -67,7 +68,7 @@ namespace EfCore.TamperEvident.Internal
                     "(supported: SQL Server, PostgreSQL, MySQL, SQLite and the in-memory provider).");
             }
 
-            var commands = isRelational ? ChainStateCommands.Build(context, provider) : null;
+            var commands = isRelational ? AuditSqlCommands.Build(context, provider) : null;
 
             var info = new AuditModelInfo(options.DbProvider, provider, isRelational, commands);
             Cache.AddOrUpdate(model, info);
@@ -116,16 +117,46 @@ namespace EfCore.TamperEvident.Internal
     }
 
     /// <summary>
-    /// The provider specific statements that lock the head of a chain. Table and column names are taken from the
-    /// EF Core model, so schemas, custom table names and naming conventions (for example snake_case) just work.
+    /// The statements that lock and update chain heads and append audit entries. Table and column names are taken
+    /// from the EF Core model, so schemas, custom table names and naming conventions (for example snake_case) just work.
+    /// The entries are written with plain parameterized SQL instead of a nested <c>SaveChanges</c>: that keeps the
+    /// interceptor compatible with execution strategies that retry on failure (<c>EnableRetryOnFailure</c>), which refuse
+    /// a second <c>SaveChanges</c> inside a running one.
     /// </summary>
-    internal sealed class ChainStateCommands
+    internal sealed class AuditSqlCommands
     {
-        private ChainStateCommands(string selectForUpdate, string insertIfMissing)
+        /// <summary>The audit log columns in the order of the parameters of <see cref="InsertLogs"/>.</summary>
+        private static readonly (string Property, Func<AuditLog, object?> Get)[] LogColumns =
+        {
+            (nameof(AuditLog.Id), l => l.Id),
+            (nameof(AuditLog.TableName), l => l.TableName),
+            (nameof(AuditLog.RecordId), l => l.RecordId),
+            (nameof(AuditLog.ActionType), l => l.ActionType),
+            (nameof(AuditLog.OldValues), l => l.OldValues),
+            (nameof(AuditLog.NewValues), l => l.NewValues),
+            (nameof(AuditLog.UserId), l => l.UserId),
+            (nameof(AuditLog.TimestampTicks), l => l.TimestampTicks),
+            (nameof(AuditLog.SequenceNumber), l => l.SequenceNumber),
+            (nameof(AuditLog.HashVersion), l => l.HashVersion),
+            (nameof(AuditLog.KeyId), l => l.KeyId),
+            (nameof(AuditLog.PreviousHash), l => l.PreviousHash),
+            (nameof(AuditLog.CurrentHash), l => l.CurrentHash)
+        };
+
+        private readonly string _insertLogsPrefix;
+        private readonly ConcurrentDictionary<int, string> _insertLogsByRowCount = new();
+
+        private AuditSqlCommands(
+            string selectForUpdate, string insertIfMissing, string updateChainState, string insertLogsPrefix)
         {
             SelectForUpdate = selectForUpdate;
             InsertIfMissing = insertIfMissing;
+            UpdateChainState = updateChainState;
+            _insertLogsPrefix = insertLogsPrefix;
         }
+
+        /// <summary>How many columns an audit entry has, which is how many parameters one row of <see cref="InsertLogs"/> takes.</summary>
+        public static int LogColumnCount => LogColumns.Length;
 
         /// <summary>Selects the chain head of the table passed as <c>{0}</c> and locks the row until the transaction ends.</summary>
         public string SelectForUpdate { get; }
@@ -136,61 +167,123 @@ namespace EfCore.TamperEvident.Internal
         /// </summary>
         public string InsertIfMissing { get; }
 
-        public static ChainStateCommands Build(DbContext context, DatabaseProvider provider)
+        /// <summary>
+        /// Updates a chain head. Parameters: last hash, unanchored count, last modified, last sequence, key id, mac, table name.
+        /// </summary>
+        public string UpdateChainState { get; }
+
+        /// <summary>Appends <paramref name="rowCount"/> audit entries with one statement.</summary>
+        public string InsertLogs(int rowCount) => _insertLogsByRowCount.GetOrAdd(rowCount, rows =>
         {
-            var entityType = context.Model.FindEntityType(typeof(AuditChainState))!;
-            var helper = context.GetService<ISqlGenerationHelper>();
-
-            var tableName = entityType.GetTableName()
-                ?? throw new InvalidOperationException($"{nameof(AuditChainState)} is not mapped to a table.");
-            var store = StoreObjectIdentifier.Table(tableName, entityType.GetSchema());
-
-            string Column(string property)
+            var rowSql = new List<string>(rows);
+            for (var row = 0; row < rows; row++)
             {
-                var column = entityType.FindProperty(property)!.GetColumnName(store)
-                    ?? throw new InvalidOperationException($"{nameof(AuditChainState)}.{property} is not mapped to a column.");
-                return Escape(helper.DelimitIdentifier(column));
+                var placeholders = Enumerable.Range(0, LogColumns.Length).Select(c => "{" + (row * LogColumns.Length + c) + "}");
+                rowSql.Add("(" + string.Join(", ", placeholders) + ")");
             }
 
-            var table = Escape(helper.DelimitIdentifier(tableName, entityType.GetSchema()));
-            var key = Column(nameof(AuditChainState.TableName));
-            var written = new[]
+            return _insertLogsPrefix + string.Join(", ", rowSql);
+        });
+
+        /// <summary>The parameter values of one audit entry, in the column order of <see cref="InsertLogs"/>.</summary>
+        public static void AddLogParameters(AuditLog log, object?[] target, int offset)
+        {
+            for (var i = 0; i < LogColumns.Length; i++)
+            {
+                target[offset + i] = LogColumns[i].Get(log);
+            }
+        }
+
+        public static AuditSqlCommands Build(DbContext context, DatabaseProvider provider)
+        {
+            var helper = context.GetService<ISqlGenerationHelper>();
+            var chain = context.Model.FindEntityType(typeof(AuditChainState))!;
+            var log = context.Model.FindEntityType(typeof(AuditLog))!;
+
+            var chainColumns = new ColumnResolver(chain, helper);
+            var logColumns = new ColumnResolver(log, helper);
+
+            var chainTable = chainColumns.Table;
+            var key = chainColumns.Column(nameof(AuditChainState.TableName));
+            var written = string.Join(", ", new[]
             {
                 key,
-                Column(nameof(AuditChainState.LastHash)),
-                Column(nameof(AuditChainState.UnanchoredCount)),
-                Column(nameof(AuditChainState.LastModified)),
-                Column(nameof(AuditChainState.LastSequence))
-            };
-            var columns = string.Join(", ", written);
+                chainColumns.Column(nameof(AuditChainState.LastHash)),
+                chainColumns.Column(nameof(AuditChainState.UnanchoredCount)),
+                chainColumns.Column(nameof(AuditChainState.LastModified)),
+                chainColumns.Column(nameof(AuditChainState.LastSequence))
+            });
             var values = "{0}, {1}, {2}, {3}, {4}";
-            var selectColumns = string.Join(", ", entityType.GetProperties().Select(p => Column(p.Name)));
+            var selectColumns = string.Join(", ", chain.GetProperties().Select(p => chainColumns.Column(p.Name)));
+
+            var update =
+                $"UPDATE {chainTable} SET " +
+                $"{chainColumns.Column(nameof(AuditChainState.LastHash))} = {{0}}, " +
+                $"{chainColumns.Column(nameof(AuditChainState.UnanchoredCount))} = {{1}}, " +
+                $"{chainColumns.Column(nameof(AuditChainState.LastModified))} = {{2}}, " +
+                $"{chainColumns.Column(nameof(AuditChainState.LastSequence))} = {{3}}, " +
+                $"{chainColumns.Column(nameof(AuditChainState.KeyId))} = {{4}}, " +
+                $"{chainColumns.Column(nameof(AuditChainState.Mac))} = {{5}} " +
+                $"WHERE {key} = {{6}}";
+
+            var insertLogs = $"INSERT INTO {logColumns.Table} ({string.Join(", ", LogColumns.Select(c => logColumns.Column(c.Property)))}) VALUES ";
 
             return provider switch
             {
-                DatabaseProvider.SqlServer => new ChainStateCommands(
-                    $"SELECT {selectColumns} FROM {table} WITH (UPDLOCK, ROWLOCK) WHERE {key} = {{0}}",
-                    $"IF NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
-                    $"INSERT INTO {table} ({columns}) VALUES ({values})"),
+                DatabaseProvider.SqlServer => new AuditSqlCommands(
+                    $"SELECT {selectColumns} FROM {chainTable} WITH (UPDLOCK, ROWLOCK) WHERE {key} = {{0}}",
+                    $"IF NOT EXISTS (SELECT 1 FROM {chainTable} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
+                    $"INSERT INTO {chainTable} ({written}) VALUES ({values})",
+                    update, insertLogs),
 
-                DatabaseProvider.PostgreSql => new ChainStateCommands(
-                    $"SELECT {selectColumns} FROM {table} WHERE {key} = {{0}} FOR UPDATE",
-                    $"INSERT INTO {table} ({columns}) VALUES ({values}) ON CONFLICT ({key}) DO NOTHING"),
+                DatabaseProvider.PostgreSql => new AuditSqlCommands(
+                    $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
+                    $"INSERT INTO {chainTable} ({written}) VALUES ({values}) ON CONFLICT ({key}) DO NOTHING",
+                    update, insertLogs),
 
-                DatabaseProvider.MySql => new ChainStateCommands(
-                    $"SELECT {selectColumns} FROM {table} WHERE {key} = {{0}} FOR UPDATE",
-                    $"INSERT IGNORE INTO {table} ({columns}) VALUES ({values})"),
+                DatabaseProvider.MySql => new AuditSqlCommands(
+                    $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
+                    $"INSERT IGNORE INTO {chainTable} ({written}) VALUES ({values})",
+                    update, insertLogs),
 
                 // SQLite has a single writer: the transaction that already wrote the audited rows owns the database lock.
-                DatabaseProvider.Sqlite => new ChainStateCommands(
-                    $"SELECT {selectColumns} FROM {table} WHERE {key} = {{0}}",
-                    $"INSERT OR IGNORE INTO {table} ({columns}) VALUES ({values})"),
+                DatabaseProvider.Sqlite => new AuditSqlCommands(
+                    $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}}",
+                    $"INSERT OR IGNORE INTO {chainTable} ({written}) VALUES ({values})",
+                    update, insertLogs),
 
                 _ => throw new NotSupportedException($"The database provider {provider} is not supported for relational databases.")
             };
         }
 
-        // Identifiers are embedded into a format string, so braces must be doubled.
-        private static string Escape(string identifier) => identifier.Replace("{", "{{").Replace("}", "}}");
+        private sealed class ColumnResolver
+        {
+            private readonly IEntityType _entityType;
+            private readonly ISqlGenerationHelper _helper;
+            private readonly StoreObjectIdentifier _store;
+
+            public ColumnResolver(IEntityType entityType, ISqlGenerationHelper helper)
+            {
+                _entityType = entityType;
+                _helper = helper;
+
+                var tableName = entityType.GetTableName()
+                    ?? throw new InvalidOperationException($"{entityType.DisplayName()} is not mapped to a table.");
+                _store = StoreObjectIdentifier.Table(tableName, entityType.GetSchema());
+                Table = Escape(helper.DelimitIdentifier(tableName, entityType.GetSchema()));
+            }
+
+            public string Table { get; }
+
+            public string Column(string property)
+            {
+                var column = _entityType.FindProperty(property)!.GetColumnName(_store)
+                    ?? throw new InvalidOperationException($"{_entityType.DisplayName()}.{property} is not mapped to a column.");
+                return Escape(_helper.DelimitIdentifier(column));
+            }
+
+            // Identifiers are embedded into a format string, so braces must be doubled.
+            private static string Escape(string identifier) => identifier.Replace("{", "{{").Replace("}", "}}");
+        }
     }
 }
