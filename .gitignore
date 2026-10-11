@@ -37,3 +37,7 @@ Thumbs.db
 
 ## Node tooling (screenshot / asset scripts)
 node_modules/
+
+## Sample data (re-created on startup)
+App_Data/
+*.jsonl
