@@ -281,7 +281,7 @@
         statTile('Active users', number.format(overview.totals.users), 'user', 'var(--teal)', `in the last ${overview.totals.userDays || 30} days`),
         statTile('Last entry', lastEntry ? relTime(lastEntry) : '—', 'clock', 'var(--orange)', lastEntry ? dateTime.format(new Date(lastEntry)) : 'nothing audited yet')),
       h('div', { class: 'grid split' }, chainCard(), activityCard(activity)),
-      tables.length ? h('div', { class: 'grid cols-3' }, tables.map(tableCard)) : emptyCard());
+      tables.length ? tableCards() : emptyCard());
     await loadChain();
   }
 
@@ -466,6 +466,10 @@
       h('div', { class: 'legend' }, ACTIONS.map(([label, , color]) => h('span', { style: { '--c': color } }, h('i'), label))));
   }
 
+  function tableCards() {
+    return h('div', { class: 'grid cols-3', id: 'table-cards' }, state.overview.tables.map(tableCard));
+  }
+
   function tableCard(table) {
     const status = tableStatus(table.table);
     return h('a', { class: 'glass table-card', href: '#/trail?table=' + encodeURIComponent(table.table) },
@@ -516,7 +520,7 @@
 
     const results = h('section', { class: 'glass card', id: 'trail-results', 'aria-label': 'Entries', style: { padding: '8px 6px 18px' } });
     const timeline = t.table && t.recordId ? h('section', { class: 'glass card', id: 'timeline', 'aria-label': 'Record history' }, skeletonBlock(120)) : null;
-    view.replaceChildren(filters, timeline, results);
+    view.replaceChildren(...[filters, timeline, results].filter(Boolean));
     await Promise.all([loadTrail(), timeline ? loadTimeline(timeline, t.table, t.recordId) : null]);
   }
 
@@ -807,6 +811,8 @@
   function refreshHero() {
     const hero = $('.hero');
     if (hero && state.overview) hero.replaceWith(heroCard());
+    const cards = $('#table-cards');
+    if (cards && state.overview) cards.replaceWith(tableCards());
     if (!$('#chain-host') || !state.overview) return;
 
     // A table that failed verification is the interesting one: show its chain unless the user picked another.
