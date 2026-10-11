@@ -118,6 +118,19 @@ namespace EfCore.TamperEvident.Configuration
         /// <summary>The user recorded when no user can be resolved. Defaults to <c>System</c>.</summary>
         public string DefaultUserId { get; set; } = "System";
 
+        /// <summary>
+        /// Adds metadata to the audit entries of a <c>SaveChanges</c> call, for example the tenant, the client IP address
+        /// or the application version. Called once per <c>SaveChanges</c>. Entries of an active <see cref="AuditScope"/>
+        /// take precedence. The metadata is sealed into the hash of every entry and can be redacted later.
+        /// </summary>
+        public Func<DbContext, IEnumerable<KeyValuePair<string, object?>>?>? MetadataProvider { get; set; }
+
+        /// <summary>
+        /// Records the W3C trace id of the current <see cref="System.Diagnostics.Activity"/> (as <c>traceId</c>) so that
+        /// audit entries can be correlated with logs and distributed traces. Defaults to <c>true</c>.
+        /// </summary>
+        public bool CaptureTraceId { get; set; } = true;
+
         /// <summary>The clock used for timestamps. Replace it in tests.</summary>
         public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 

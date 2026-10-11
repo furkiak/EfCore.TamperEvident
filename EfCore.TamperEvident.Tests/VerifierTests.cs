@@ -284,7 +284,7 @@ namespace EfCore.TamperEvident.Tests
             // Worst case: the key leaked. The attacker rebuilds a perfectly valid chain with forged content.
             using var harness = await SeededAsync();
             var anchor = (await ReadHashesAsync(harness))[2];
-            var key = System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey);
+            var key = new AuditKey(null, System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey));
 
             await using (var db = harness.CreateUnauditedContext())
             {
@@ -316,7 +316,7 @@ namespace EfCore.TamperEvident.Tests
         public async Task ChainRebuiltWithAnotherKey_IsInvalid()
         {
             using var harness = await SeededAsync();
-            var attackerKey = System.Text.Encoding.UTF8.GetBytes("attacker-guessed-key-0123456789abcdef");
+            var attackerKey = new AuditKey(null, System.Text.Encoding.UTF8.GetBytes("attacker-guessed-key-0123456789abcdef"));
 
             await using (var db = harness.CreateUnauditedContext())
             {
@@ -449,7 +449,7 @@ namespace EfCore.TamperEvident.Tests
         public async Task LegacyEntries_FromVersionOne_StayVerifiable_AndNewEntriesContinueTheChain()
         {
             using var harness = new Harness();
-            var key = System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey);
+            var key = new AuditKey(null, System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey));
 
             // Rows exactly as 1.x wrote them: no sequence, no user in the hash, plain concatenation.
             var first = LegacyLog("GENESIS", "Customers", "1", "Added", null, "{\"Name\":\"old\"}", 1000, key);
@@ -488,7 +488,7 @@ namespace EfCore.TamperEvident.Tests
         public async Task LegacyEntries_TamperingIsStillDetected()
         {
             using var harness = new Harness();
-            var key = System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey);
+            var key = new AuditKey(null, System.Text.Encoding.UTF8.GetBytes(Harness.SecretKey));
             var first = LegacyLog("GENESIS", "Customers", "1", "Added", null, "{\"Name\":\"old\"}", 1000, key);
 
             await using (var db = harness.CreateUnauditedContext())
@@ -509,7 +509,7 @@ namespace EfCore.TamperEvident.Tests
             // 1.x shipped a public default key. Upgrading means configuring a new key and keeping the old one for verification.
             const string legacyDefault = TamperEvidentOptions.Version1DefaultKey;
             using var harness = new Harness();
-            var first = LegacyLog("GENESIS", "Customers", "1", "Added", null, "{}", 1000, System.Text.Encoding.UTF8.GetBytes(legacyDefault));
+            var first = LegacyLog("GENESIS", "Customers", "1", "Added", null, "{}", 1000, new AuditKey(null, System.Text.Encoding.UTF8.GetBytes(legacyDefault)));
 
             await using (var db = harness.CreateUnauditedContext())
             {
@@ -527,7 +527,7 @@ namespace EfCore.TamperEvident.Tests
         }
 
         private static AuditLog LegacyLog(
-            string previousHash, string table, string recordId, string action, string? oldValues, string? newValues, long ticks, byte[] key)
+            string previousHash, string table, string recordId, string action, string? oldValues, string? newValues, long ticks, AuditKey key)
         {
             var log = new AuditLog
             {
@@ -545,7 +545,7 @@ namespace EfCore.TamperEvident.Tests
                 CurrentHash = string.Empty
             };
             log.CurrentHash = SecurityHelper.ComputeHash(
-                $"{previousHash}{table}{recordId}{action}{oldValues}{newValues}{ticks}", System.Text.Encoding.UTF8.GetString(key));
+                $"{previousHash}{table}{recordId}{action}{oldValues}{newValues}{ticks}", System.Text.Encoding.UTF8.GetString(key.Secret));
             return log;
         }
 

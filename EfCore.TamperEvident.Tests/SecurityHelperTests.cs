@@ -123,7 +123,7 @@ namespace EfCore.TamperEvident.Tests
 
     public class HasherTests
     {
-        private static readonly byte[] Key = System.Text.Encoding.UTF8.GetBytes("hasher-test-key-0123456789abcdef");
+        private static readonly AuditKey Key = new(null, System.Text.Encoding.UTF8.GetBytes("hasher-test-key-0123456789abcdef"));
 
         private static AuditLog Log() => new()
         {
@@ -211,7 +211,7 @@ namespace EfCore.TamperEvident.Tests
             log.UserId = "ignored in the legacy format";
 
             var expected = SecurityHelper.ComputeHash(
-                $"GENESISCustomers1Added{null}{{}}638000000000000000", System.Text.Encoding.UTF8.GetString(Key));
+                $"GENESISCustomers1Added{null}{{}}638000000000000000", System.Text.Encoding.UTF8.GetString(Key.Secret));
             Assert.Equal(expected, AuditHasher.ComputeRecordHash(Key, log));
         }
 
@@ -253,7 +253,7 @@ namespace EfCore.TamperEvident.Tests
             Assert.Equal(token, AuditHasher.ComputeMaskToken(Key, "Customers", "CardNumber", "4111"));
             Assert.NotEqual(token, AuditHasher.ComputeMaskToken(Key, "Customers", "CardNumber", "4112"));
             Assert.NotEqual(token, AuditHasher.ComputeMaskToken(Key, "Customers", "Iban", "4111"));
-            Assert.NotEqual(token, AuditHasher.ComputeMaskToken(System.Text.Encoding.UTF8.GetBytes("another-key-0123456789"), "Customers", "CardNumber", "4111"));
+            Assert.NotEqual(token, AuditHasher.ComputeMaskToken(new AuditKey(null, System.Text.Encoding.UTF8.GetBytes("another-key-0123456789")), "Customers", "CardNumber", "4111"));
         }
 
         [Fact]

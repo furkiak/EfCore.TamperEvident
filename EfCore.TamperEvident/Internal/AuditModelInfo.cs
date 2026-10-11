@@ -134,6 +134,7 @@ namespace EfCore.TamperEvident.Internal
             (nameof(AuditLog.ActionType), l => l.ActionType),
             (nameof(AuditLog.OldValues), l => l.OldValues),
             (nameof(AuditLog.NewValues), l => l.NewValues),
+            (nameof(AuditLog.Metadata), l => l.Metadata),
             (nameof(AuditLog.UserId), l => l.UserId),
             (nameof(AuditLog.TimestampTicks), l => l.TimestampTicks),
             (nameof(AuditLog.SequenceNumber), l => l.SequenceNumber),
@@ -147,12 +148,13 @@ namespace EfCore.TamperEvident.Internal
         private readonly ConcurrentDictionary<int, string> _insertLogsByRowCount = new();
 
         private AuditSqlCommands(
-            string selectForUpdate, string insertIfMissing, string updateChainState, string insertLogsPrefix)
+            string selectForUpdate, string insertIfMissing, string updateChainState, (string InsertLogsPrefix, string UpdateRedacted) logs)
         {
             SelectForUpdate = selectForUpdate;
             InsertIfMissing = insertIfMissing;
             UpdateChainState = updateChainState;
-            _insertLogsPrefix = insertLogsPrefix;
+            _insertLogsPrefix = logs.InsertLogsPrefix;
+            UpdateRedacted = logs.UpdateRedacted;
         }
 
         /// <summary>How many columns an audit entry has, which is how many parameters one row of <see cref="InsertLogs"/> takes.</summary>
@@ -171,6 +173,11 @@ namespace EfCore.TamperEvident.Internal
         /// Updates a chain head. Parameters: last hash, unanchored count, last modified, last sequence, key id, mac, table name.
         /// </summary>
         public string UpdateChainState { get; }
+
+        /// <summary>
+        /// Replaces the values of a redacted entry. Parameters: record id, user id, old values, new values, metadata, entry id.
+        /// </summary>
+        public string UpdateRedacted { get; }
 
         /// <summary>Appends <paramref name="rowCount"/> audit entries with one statement.</summary>
         public string InsertLogs(int rowCount) => _insertLogsByRowCount.GetOrAdd(rowCount, rows =>
@@ -227,6 +234,15 @@ namespace EfCore.TamperEvident.Internal
                 $"WHERE {key} = {{6}}";
 
             var insertLogs = $"INSERT INTO {logColumns.Table} ({string.Join(", ", LogColumns.Select(c => logColumns.Column(c.Property)))}) VALUES ";
+            var updateRedacted =
+                $"UPDATE {logColumns.Table} SET " +
+                $"{logColumns.Column(nameof(AuditLog.RecordId))} = {{0}}, " +
+                $"{logColumns.Column(nameof(AuditLog.UserId))} = {{1}}, " +
+                $"{logColumns.Column(nameof(AuditLog.OldValues))} = {{2}}, " +
+                $"{logColumns.Column(nameof(AuditLog.NewValues))} = {{3}}, " +
+                $"{logColumns.Column(nameof(AuditLog.Metadata))} = {{4}} " +
+                $"WHERE {logColumns.Column(nameof(AuditLog.Id))} = {{5}}";
+            var logs = (insertLogs, updateRedacted);
 
             return provider switch
             {
@@ -239,23 +255,23 @@ namespace EfCore.TamperEvident.Internal
                     $"INSERT INTO {chainTable} ({written}) SELECT {values} " +
                     $"WHERE NOT EXISTS (SELECT 1 FROM {chainTable} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
                     $"END TRY BEGIN CATCH IF ERROR_NUMBER() NOT IN (2601, 2627) THROW; END CATCH",
-                    update, insertLogs),
+                    update, logs),
 
                 DatabaseProvider.PostgreSql => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
                     $"INSERT INTO {chainTable} ({written}) VALUES ({values}) ON CONFLICT ({key}) DO NOTHING",
-                    update, insertLogs),
+                    update, logs),
 
                 DatabaseProvider.MySql => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
                     $"INSERT IGNORE INTO {chainTable} ({written}) VALUES ({values})",
-                    update, insertLogs),
+                    update, logs),
 
                 // SQLite has a single writer: the transaction that already wrote the audited rows owns the database lock.
                 DatabaseProvider.Sqlite => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}}",
                     $"INSERT OR IGNORE INTO {chainTable} ({written}) VALUES ({values})",
-                    update, insertLogs),
+                    update, logs),
 
                 _ => throw new NotSupportedException($"The database provider {provider} is not supported for relational databases.")
             };

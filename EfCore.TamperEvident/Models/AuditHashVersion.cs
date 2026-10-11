@@ -16,5 +16,16 @@ namespace EfCore.TamperEvident.Models
         /// is length-prefixed so that field boundaries can never be shifted without breaking the hash.
         /// </summary>
         public const int Canonical = 2;
+
+        /// <summary>
+        /// The canonical format in which the record id, the user, every value and every metadata entry is committed to
+        /// through its own keyed digest, and which also covers the entry id and the metadata. A value can therefore be
+        /// redacted (for example to honour an erasure request under GDPR or KVKK) by replacing it with its digest,
+        /// without changing the hash of the entry or breaking the chain. Written since 2.0.
+        /// </summary>
+        public const int Redactable = 3;
+
+        /// <summary>The version new entries are written with.</summary>
+        public const int Current = Redactable;
     }
 }

@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Internal;
@@ -48,6 +49,13 @@ namespace EfCore.TamperEvident.Interceptors
             _reader = new AuditEntryReader(options, _keys);
             _dispatcher = new AnchorDispatcher(options);
         }
+
+        /// <summary>The options the interceptor was created with.</summary>
+        internal TamperEvidentOptions Options => _options;
+
+        internal AuditKeyRing Keys => _keys;
+
+        internal AuditEntryReader Reader => _reader;
 
         /// <summary>
         /// Waits until all anchors that are being delivered in the background reached their publisher.
@@ -208,13 +216,13 @@ namespace EfCore.TamperEvident.Interceptors
                 return null;
             }
 
-            var session = new AuditSession(AuditModelInfo.Resolve(context, _options), ResolveUserId(context), entries);
+            var session = new AuditSession(AuditModelInfo.Resolve(context, _options), ResolveUserId(context), ResolveMetadata(context), entries);
             session.Preps.AddRange(preps);
             _sessions.AddOrUpdate(context, session);
             return session;
         }
 
-        private string ResolveUserId(DbContext context)
+        internal string ResolveUserId(DbContext context)
         {
             var user = AuditScope.CurrentUserId ?? _options.UserIdProvider?.Invoke(context);
             if (string.IsNullOrWhiteSpace(user))
@@ -223,6 +231,35 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             return user.Length > 256 ? user[..256] : user;
+        }
+
+        /// <summary>The trace id, the metadata of the provider and of the active scopes, as deterministic JSON.</summary>
+        internal string? ResolveMetadata(DbContext context)
+        {
+            Dictionary<string, object?>? values = null;
+
+            if (_options.CaptureTraceId && Activity.Current is { IdFormat: ActivityIdFormat.W3C } activity)
+            {
+                (values ??= new(StringComparer.Ordinal))["traceId"] = activity.TraceId.ToHexString();
+            }
+
+            if (_options.MetadataProvider?.Invoke(context) is { } provided)
+            {
+                foreach (var (key, value) in provided)
+                {
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        (values ??= new(StringComparer.Ordinal))[key] = value;
+                    }
+                }
+            }
+
+            foreach (var (key, value) in AuditScope.CurrentMetadata)
+            {
+                (values ??= new(StringComparer.Ordinal))[key] = value;
+            }
+
+            return values is null ? null : AuditSerializer.Serialize(values);
         }
 
         private DateTime NowUtc() => _options.TimeProvider.GetUtcNow().UtcDateTime;
@@ -418,8 +455,8 @@ namespace EfCore.TamperEvident.Interceptors
         /// <summary>Chains the captured changes onto the (locked) chain heads.</summary>
         private SealedBatch Seal(AuditSession session, Dictionary<string, AuditChainState> chains, DateTimeOffset now)
         {
-            var key = _keys.CurrentKey;
-            var keyId = _keys.CurrentKeyId;
+            var key = _keys.Current;
+            var keyId = key.Id;
             var anchors = new List<AuditAnchor>();
             var logs = new List<AuditLog>(session.Preps.Count);
 
@@ -446,10 +483,11 @@ namespace EfCore.TamperEvident.Interceptors
                         ActionType = prep.Action,
                         OldValues = prep.OldValues,
                         NewValues = prep.NewValues,
+                        Metadata = session.Metadata,
                         UserId = session.UserId,
                         TimestampTicks = now.UtcTicks,
                         SequenceNumber = sequence,
-                        HashVersion = AuditHashVersion.Canonical,
+                        HashVersion = AuditHashVersion.Current,
                         KeyId = keyId,
                         PreviousHash = previousHash,
                         CurrentHash = string.Empty

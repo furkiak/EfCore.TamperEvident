@@ -19,5 +19,11 @@ namespace EfCore.TamperEvident.Models
 
         /// <summary>A logically deleted row was restored (for example <c>IsDeleted</c> changed from <c>true</c> to <c>false</c>).</summary>
         public const string Restored = "Restored";
+
+        /// <summary>
+        /// Values of earlier entries were redacted. The entry lists which values of which entries, and its metadata
+        /// carries the reason. Verification only accepts a redacted value that such an entry authorizes.
+        /// </summary>
+        public const string Redacted = "Redacted";
     }
 }

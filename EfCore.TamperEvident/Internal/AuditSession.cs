@@ -9,16 +9,20 @@ namespace EfCore.TamperEvident.Internal
     /// </summary>
     internal sealed class AuditSession
     {
-        public AuditSession(AuditModelInfo info, string userId, List<EntityEntry> pendingEntries)
+        public AuditSession(AuditModelInfo info, string userId, string? metadata, List<EntityEntry> pendingEntries)
         {
             Info = info;
             UserId = userId;
+            Metadata = metadata;
             PendingEntries = pendingEntries;
         }
 
         public AuditModelInfo Info { get; }
 
         public string UserId { get; }
+
+        /// <summary>The metadata shared by every entry of this save (deterministic JSON), or <c>null</c>.</summary>
+        public string? Metadata { get; }
 
         /// <summary>Every entry that was pending when the save started (audited or not).</summary>
         public List<EntityEntry> PendingEntries { get; }

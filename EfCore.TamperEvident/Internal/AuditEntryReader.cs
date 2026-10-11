@@ -194,7 +194,7 @@ namespace EfCore.TamperEvident.Internal
                 return value;
             }
 
-            return AuditHasher.ComputeMaskToken(_keys.CurrentKey, tableName, propertyName, value);
+            return AuditHasher.ComputeMaskToken(_keys.Current, tableName, propertyName, value);
         }
 
         private PropertyMode GetMode(IProperty property)

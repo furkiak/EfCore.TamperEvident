@@ -33,8 +33,31 @@ namespace EfCore.TamperEvident.Services
         RecordsBeyondHead = 8,
 
         /// <summary>An externally stored anchor does not occur in the database: the history was rewritten.</summary>
-        AnchorMismatch = 9
+        AnchorMismatch = 9,
+
+        /// <summary>
+        /// The entry a <see cref="AuditCheckpoint"/> points to was changed or removed after that checkpoint was taken.
+        /// </summary>
+        CheckpointMismatch = 10,
+
+        /// <summary>A value was redacted without a <see cref="Models.AuditActions.Redacted"/> entry that authorizes it.</summary>
+        UnauthorizedRedaction = 11
     }
+
+    /// <summary>
+    /// A position in the chain of a table that a previous verification found intact. Verifying again from a checkpoint
+    /// only reads the entries that were appended since, which keeps scheduled verification cheap on large tables.
+    /// </summary>
+    /// <remarks>
+    /// Keep checkpoints where an attacker with database access cannot change them (in memory, or in another store).
+    /// An incremental verification proves that the new entries are authentic and correctly linked to the checkpoint, and
+    /// that the checkpoint entry itself is still in place. Changes to the content of older entries are only found by a full
+    /// verification, so run one regularly (the ASP.NET Core verification service does both).
+    /// </remarks>
+    /// <param name="TableName">The audited table.</param>
+    /// <param name="SequenceNumber">The sequence number of the newest verified entry.</param>
+    /// <param name="Hash">The hash of that entry.</param>
+    public sealed record AuditCheckpoint(string TableName, long SequenceNumber, string Hash);
 
     /// <summary>
     /// The outcome of verifying the audit trail of one table.
@@ -59,6 +82,9 @@ namespace EfCore.TamperEvident.Services
         /// <summary>How many of the supplied anchors were found in the chain.</summary>
         public int AnchorsMatched { get; init; }
 
+        /// <summary>How many of the verified entries hold redacted values (each one authorized by a redaction entry).</summary>
+        public long RedactedRecords { get; init; }
+
         /// <summary>The entry the failure was detected at, when it can be attributed to one.</summary>
         public Guid? FailedRecordId { get; init; }
 
@@ -70,6 +96,23 @@ namespace EfCore.TamperEvident.Services
 
         /// <summary>The sequence number of the newest verified entry (<c>0</c> for chains written by 1.x only).</summary>
         public long HeadSequence { get; init; }
+
+        /// <summary>
+        /// The checkpoint the verification started after, or <c>null</c> when the whole chain was verified.
+        /// </summary>
+        public AuditCheckpoint? StartedAfter { get; init; }
+
+        /// <summary><c>true</c> when only the entries after <see cref="StartedAfter"/> were verified.</summary>
+        public bool IsIncremental => StartedAfter is not null;
+
+        /// <summary>
+        /// Where the next verification can start (see <see cref="AuditVerifier.VerifyFromCheckpointAsync"/>).
+        /// <c>null</c> when the verification failed or the chain has no sequenced entries yet.
+        /// </summary>
+        public AuditCheckpoint? Checkpoint =>
+            IsValid && TableName is not null && HeadSequence > 0 && HeadHash is not null
+                ? new AuditCheckpoint(TableName, HeadSequence, HeadHash)
+                : null;
 
         /// <summary>How long the verification took.</summary>
         public TimeSpan Duration { get; init; }
@@ -104,5 +147,12 @@ namespace EfCore.TamperEvident.Services
 
         /// <summary>The tables that failed.</summary>
         public IEnumerable<AuditVerificationResult> Failures => Tables.Where(t => !t.IsValid);
+
+        /// <summary>
+        /// The checkpoint of every table that verified successfully, ready for the next incremental verification
+        /// (<see cref="AuditVerifier.VerifyAllAsync(IReadOnlyDictionary{string, IEnumerable{string}}?, IReadOnlyDictionary{string, AuditCheckpoint}?, CancellationToken)"/>).
+        /// </summary>
+        public IReadOnlyDictionary<string, AuditCheckpoint> Checkpoints =>
+            Tables.Where(t => t.Checkpoint is not null).ToDictionary(t => t.TableName!, t => t.Checkpoint!, StringComparer.Ordinal);
     }
 }

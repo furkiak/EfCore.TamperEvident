@@ -38,31 +38,74 @@ namespace EfCore.TamperEvident.Services
         /// occur in the chain. The collection is not modified.
         /// </param>
         /// <param name="cancellationToken">A token to cancel the verification.</param>
-        public async Task<AuditVerificationResult> VerifyTableIntegrityAsync(
+        public Task<AuditVerificationResult> VerifyTableIntegrityAsync(
             string tableName,
             IEnumerable<string>? providedAnchorKeys = null,
             CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrEmpty(tableName);
+            return VerifyAsync(tableName, null, providedAnchorKeys, cancellationToken);
+        }
 
+        /// <summary>
+        /// Verifies only the entries that were appended to a chain since a checkpoint of an earlier, successful
+        /// verification (<see cref="AuditVerificationResult.Checkpoint"/>), and makes sure that the checkpoint entry is
+        /// still in place, unchanged. The cost depends on the number of new entries, not on the size of the table.
+        /// </summary>
+        /// <param name="checkpoint">The checkpoint; it names the table.</param>
+        /// <param name="providedAnchorKeys">Anchor hashes received outside of the database (optional).</param>
+        /// <param name="cancellationToken">A token to cancel the verification.</param>
+        public Task<AuditVerificationResult> VerifyFromCheckpointAsync(
+            AuditCheckpoint checkpoint,
+            IEnumerable<string>? providedAnchorKeys = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(checkpoint);
+            ArgumentException.ThrowIfNullOrEmpty(checkpoint.TableName);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(checkpoint.SequenceNumber);
+            return VerifyAsync(checkpoint.TableName, checkpoint, providedAnchorKeys, cancellationToken);
+        }
+
+        private async Task<AuditVerificationResult> VerifyAsync(
+            string tableName, AuditCheckpoint? checkpoint, IEnumerable<string>? anchors, CancellationToken cancellationToken)
+        {
             var stopwatch = Stopwatch.StartNew();
-            var anchors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (providedAnchorKeys is not null)
+            var validator = new ChainValidator(tableName, _keys, checkpoint, anchors);
+
+            AuditVerificationResult Result(ChainFailure? failure) => new()
             {
-                foreach (var anchor in providedAnchorKeys)
-                {
-                    if (!string.IsNullOrWhiteSpace(anchor))
-                    {
-                        anchors.Add(anchor.Trim());
-                    }
-                }
-            }
+                IsValid = failure is null,
+                Failure = failure?.Kind ?? AuditFailureKind.None,
+                Message = failure?.Message ?? SuccessMessage(validator),
+                TableName = tableName,
+                RecordsChecked = validator.RecordsChecked,
+                AnchorsMatched = validator.AnchorsMatched,
+                RedactedRecords = validator.RedactedRecords,
+                FailedRecordId = failure?.EntryId,
+                FailedSequence = failure?.Sequence,
+                HeadHash = validator.LastHash,
+                HeadSequence = validator.Sequence,
+                StartedAfter = checkpoint,
+                Duration = stopwatch.Elapsed
+            };
 
             // The head is read first. Entries that are appended while the verification runs lie behind it and are
             // left for the next run, which keeps the check consistent on a busy system.
             var state = await ReadStateAsync(tableName, cancellationToken).ConfigureAwait(false);
 
             IQueryable<AuditLog> query = _context.Set<AuditLog>().AsNoTracking().Where(x => x.TableName == tableName);
+            if (checkpoint is not null)
+            {
+                var failure = await CheckCheckpointAsync(checkpoint, state, cancellationToken).ConfigureAwait(false);
+                if (failure is not null)
+                {
+                    return Result(failure);
+                }
+
+                var after = checkpoint.SequenceNumber;
+                query = query.Where(x => x.SequenceNumber > after);
+            }
+
             if (state is not null)
             {
                 var headSequence = state.LastSequence;
@@ -71,101 +114,48 @@ namespace EfCore.TamperEvident.Services
 
             query = query.OrderBy(x => x.SequenceNumber).ThenBy(x => x.TimestampTicks);
 
-            var expectedPreviousHash = ChainStateStore.GenesisHash;
-            long canonicalSequence = 0;
-            long checkedCount = 0;
-            var matchedAnchors = 0;
-            AuditLog? last = null;
-
-            AuditVerificationResult Fail(AuditFailureKind kind, string message, AuditLog? at = null) => new()
-            {
-                IsValid = false,
-                Failure = kind,
-                Message = message,
-                TableName = tableName,
-                RecordsChecked = checkedCount,
-                AnchorsMatched = matchedAnchors,
-                FailedRecordId = at?.Id,
-                FailedSequence = at?.SequenceNumber,
-                HeadHash = last?.CurrentHash,
-                HeadSequence = canonicalSequence,
-                Duration = stopwatch.Elapsed
-            };
-
             await foreach (var log in query.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                checkedCount++;
-
-                if (!string.Equals(log.PreviousHash, expectedPreviousHash, StringComparison.Ordinal))
+                if (validator.Accept(log) is { } failure)
                 {
-                    return Fail(AuditFailureKind.ChainBroken,
-                        $"CHAIN BROKEN! Tampering detected at record ID: {log.Id}. The previous hash does not match.", log);
+                    return Result(failure);
                 }
-
-                if (log.HashVersion == AuditHashVersion.Canonical)
-                {
-                    canonicalSequence++;
-                    if (log.SequenceNumber != canonicalSequence)
-                    {
-                        return Fail(AuditFailureKind.SequenceGap,
-                            $"SEQUENCE GAP! Record ID: {log.Id} has sequence {log.SequenceNumber} but {canonicalSequence} was expected. Entries were removed or reordered.", log);
-                    }
-                }
-                else if (log.HashVersion != AuditHashVersion.Legacy || canonicalSequence > 0)
-                {
-                    return Fail(AuditFailureKind.DataManipulated,
-                        $"DATA MANIPULATION DETECTED! Record ID: {log.Id} has an unexpected hash version ({log.HashVersion}).", log);
-                }
-
-                var candidates = _keys.Candidates(log.KeyId);
-                if (candidates.Count == 0)
-                {
-                    return Fail(AuditFailureKind.UnknownKey,
-                        $"UNKNOWN KEY! Record ID: {log.Id} was sealed with key '{log.KeyId}', which is not configured.", log);
-                }
-
-                if (!MatchesAnyKey(candidates, log))
-                {
-                    return Fail(AuditFailureKind.DataManipulated,
-                        $"DATA MANIPULATION DETECTED! The payload of record ID: {log.Id} has been externally modified.", log);
-                }
-
-                if (anchors.Remove(log.CurrentHash))
-                {
-                    matchedAnchors++;
-                }
-
-                expectedPreviousHash = log.CurrentHash;
-                last = log;
             }
 
-            var tailFailure = await CheckHeadAsync(tableName, state, last, canonicalSequence, checkedCount, cancellationToken).ConfigureAwait(false);
-            if (tailFailure is not null)
+            var tail = validator.CheckRedactions()
+                ?? validator.CheckHead(state)
+                ?? await CheckBeyondHeadAsync(tableName, state, cancellationToken).ConfigureAwait(false);
+            if (tail is not null)
             {
-                return Fail(tailFailure.Value.Kind, tailFailure.Value.Message, last);
+                return Result(tail);
             }
 
-            if (anchors.Count > 0)
+            if (validator.UnmatchedAnchors.Count > 0 && checkpoint is not null)
             {
-                return Fail(AuditFailureKind.AnchorMismatch,
-                    "ANCHOR MISMATCH! The provided anchor keys were not found in the database. The database history has likely been regenerated (Hash Recalculation Attack).");
+                // Anchors that are older than the checkpoint were verified as part of the chain before.
+                await MatchOlderAnchorsAsync(validator, tableName, checkpoint.SequenceNumber, cancellationToken).ConfigureAwait(false);
             }
 
-            return new AuditVerificationResult
+            if (validator.UnmatchedAnchors.Count > 0)
             {
-                IsValid = true,
-                Failure = AuditFailureKind.None,
-                TableName = tableName,
-                RecordsChecked = checkedCount,
-                AnchorsMatched = matchedAnchors,
-                HeadHash = last?.CurrentHash,
-                HeadSequence = canonicalSequence,
-                Duration = stopwatch.Elapsed,
-                Message = checkedCount == 0
+                return Result(new ChainFailure(AuditFailureKind.AnchorMismatch,
+                    "ANCHOR MISMATCH! The provided anchor keys were not found in the database. The database history has likely been regenerated (Hash Recalculation Attack)."));
+            }
+
+            return Result(null);
+        }
+
+        private static string SuccessMessage(ChainValidator validator)
+        {
+            if (validator.RecordsChecked == 0)
+            {
+                return validator.Sequence == 0
                     ? "No audit logs found for the specified table."
-                    : "All verifications passed successfully! The hash chain is intact, and " +
-                      (matchedAnchors == 1 ? "1 anchor was" : $"{matchedAnchors} anchors were") + " successfully verified."
-            };
+                    : "No new audit entries since the checkpoint; the chain head still matches it.";
+            }
+
+            var anchors = validator.AnchorsMatched == 1 ? "1 anchor was" : $"{validator.AnchorsMatched} anchors were";
+            return "All verifications passed successfully! The hash chain is intact, and " + anchors + " successfully verified.";
         }
 
         /// <summary>
@@ -173,8 +163,21 @@ namespace EfCore.TamperEvident.Services
         /// </summary>
         /// <param name="anchors">Externally stored anchor hashes per table (optional).</param>
         /// <param name="cancellationToken">A token to cancel the verification.</param>
-        public async Task<AuditVerificationReport> VerifyAllAsync(
+        public Task<AuditVerificationReport> VerifyAllAsync(
             IReadOnlyDictionary<string, IEnumerable<string>>? anchors = null,
+            CancellationToken cancellationToken = default) =>
+            VerifyAllAsync(anchors, null, cancellationToken);
+
+        /// <summary>
+        /// Verifies every audited table; the tables that have a checkpoint only from that checkpoint on
+        /// (see <see cref="VerifyFromCheckpointAsync"/>).
+        /// </summary>
+        /// <param name="anchors">Externally stored anchor hashes per table (optional).</param>
+        /// <param name="checkpoints">Checkpoints per table, usually <see cref="AuditVerificationReport.Checkpoints"/> of the previous run.</param>
+        /// <param name="cancellationToken">A token to cancel the verification.</param>
+        public async Task<AuditVerificationReport> VerifyAllAsync(
+            IReadOnlyDictionary<string, IEnumerable<string>>? anchors,
+            IReadOnlyDictionary<string, AuditCheckpoint>? checkpoints,
             CancellationToken cancellationToken = default)
         {
             var results = new List<AuditVerificationResult>();
@@ -182,9 +185,17 @@ namespace EfCore.TamperEvident.Services
             {
                 IEnumerable<string>? tableAnchors = null;
                 anchors?.TryGetValue(table, out tableAnchors);
-                results.Add(await VerifyTableIntegrityAsync(table, tableAnchors, cancellationToken).ConfigureAwait(false));
+                AuditCheckpoint? checkpoint = null;
+                checkpoints?.TryGetValue(table, out checkpoint);
+
+                results.Add(await VerifyAsync(table, checkpoint, tableAnchors, cancellationToken).ConfigureAwait(false));
             }
 
+            return Report(results);
+        }
+
+        internal static AuditVerificationReport Report(IReadOnlyList<AuditVerificationResult> results)
+        {
             var failed = results.Count(r => !r.IsValid);
             return new AuditVerificationReport
             {
@@ -215,78 +226,72 @@ namespace EfCore.TamperEvident.Services
         private Task<AuditChainState?> ReadStateAsync(string tableName, CancellationToken cancellationToken) =>
             _context.Set<AuditChainState>().AsNoTracking().FirstOrDefaultAsync(s => s.TableName == tableName, cancellationToken);
 
-        private static bool MatchesAnyKey(IReadOnlyList<byte[]> candidates, AuditLog log)
+        // The entry a checkpoint points to must still be there, unchanged, and must not lie behind the head.
+        private async Task<ChainFailure?> CheckCheckpointAsync(AuditCheckpoint checkpoint, AuditChainState? state, CancellationToken cancellationToken)
         {
-            foreach (var key in candidates)
+            var table = checkpoint.TableName;
+            var sequence = checkpoint.SequenceNumber;
+            var stored = await _context.Set<AuditLog>().AsNoTracking()
+                .Where(x => x.TableName == table && x.SequenceNumber == sequence)
+                .Select(x => new { x.Id, x.CurrentHash })
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+            if (stored.Count != 1 || !string.Equals(stored[0].CurrentHash, checkpoint.Hash, StringComparison.Ordinal))
             {
-                if (AuditHasher.HexEquals(AuditHasher.ComputeRecordHash(key, log), log.CurrentHash))
-                {
-                    return true;
-                }
+                return new ChainFailure(AuditFailureKind.CheckpointMismatch,
+                    $"CHECKPOINT MISMATCH! The entry with sequence {sequence} of table '{table}' was changed or removed after it was verified.",
+                    stored.Count == 1 ? stored[0].Id : null, sequence);
             }
 
-            return false;
-        }
-
-        /// <summary>
-        /// Compares the authenticated chain head with the newest entry. Without this step the newest entries could be
-        /// deleted and the remaining chain would still look perfect.
-        /// </summary>
-        private async Task<(AuditFailureKind Kind, string Message)?> CheckHeadAsync(
-            string tableName, AuditChainState? state, AuditLog? last, long canonicalSequence, long checkedCount, CancellationToken cancellationToken)
-        {
-            if (state is null)
+            if (state is not null && state.LastSequence < sequence)
             {
-                return checkedCount == 0
-                    ? null
-                    : (AuditFailureKind.ChainStateMissing,
-                        $"CHAIN HEAD MISSING! Audit entries exist for table '{tableName}' but its chain head was removed.");
-            }
-
-            if (state.Mac is null)
-            {
-                if (canonicalSequence > 0 || state.LastSequence > 0)
-                {
-                    return (AuditFailureKind.ChainStateTampered,
-                        $"CHAIN HEAD TAMPERED! The signature of the chain head of table '{tableName}' was removed.");
-                }
-            }
-            else
-            {
-                var candidates = _keys.Candidates(state.KeyId);
-                var authentic = candidates.Any(key => AuditHasher.HexEquals(
-                    AuditHasher.ComputeStateMac(key, state.TableName, state.LastHash, state.LastSequence, state.KeyId), state.Mac));
-                if (!authentic)
-                {
-                    return (AuditFailureKind.ChainStateTampered,
-                        $"CHAIN HEAD TAMPERED! The chain head of table '{tableName}' does not match its signature.");
-                }
-            }
-
-            var expectedHash = last?.CurrentHash ?? ChainStateStore.GenesisHash;
-            if (!string.Equals(state.LastHash, expectedHash, StringComparison.Ordinal) || state.LastSequence != canonicalSequence)
-            {
-                return (AuditFailureKind.RecordsMissing,
-                    $"RECORDS MISSING! The chain head of table '{tableName}' expects sequence {state.LastSequence}, " +
-                    $"but the newest audit entry has sequence {canonicalSequence}. The newest entries were deleted.");
-            }
-
-            // Entries behind the head were not written by the interceptor. If the head moved in the meantime they are
-            // simply newer writes, so the head is read again before judging.
-            var headSequence = state.LastSequence;
-            var behind = await _context.Set<AuditLog>().AsNoTracking()
-                .AnyAsync(x => x.TableName == tableName && x.SequenceNumber > headSequence, cancellationToken).ConfigureAwait(false);
-            if (behind)
-            {
-                var again = await ReadStateAsync(tableName, cancellationToken).ConfigureAwait(false);
-                if (again is not null && again.LastSequence == state.LastSequence && again.LastHash == state.LastHash)
-                {
-                    return (AuditFailureKind.RecordsBeyondHead,
-                        $"UNTRACKED RECORDS! Audit entries of table '{tableName}' exist behind the chain head. They were added without going through the audit trail.");
-                }
+                return new ChainFailure(AuditFailureKind.RecordsMissing,
+                    $"RECORDS MISSING! The chain head of table '{table}' was moved back from sequence {sequence} to {state.LastSequence}.");
             }
 
             return null;
+        }
+
+        private async Task MatchOlderAnchorsAsync(ChainValidator validator, string table, long upToSequence, CancellationToken cancellationToken)
+        {
+            foreach (var chunk in validator.UnmatchedAnchors.ToList().Chunk(500))
+            {
+                var lowered = chunk.Select(a => a.ToLowerInvariant()).ToList();
+                var found = await _context.Set<AuditLog>().AsNoTracking()
+                    .Where(x => x.TableName == table && x.SequenceNumber <= upToSequence && lowered.Contains(x.CurrentHash))
+                    .Select(x => x.CurrentHash)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var hash in found)
+                {
+                    validator.MatchAnchor(hash);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Entries behind the head were not written by the interceptor. If the head moved in the meantime they are
+        /// simply newer writes, so the head is read again before judging.
+        /// </summary>
+        private async Task<ChainFailure?> CheckBeyondHeadAsync(string tableName, AuditChainState? state, CancellationToken cancellationToken)
+        {
+            if (state is null)
+            {
+                return null;
+            }
+
+            var headSequence = state.LastSequence;
+            var behind = await _context.Set<AuditLog>().AsNoTracking()
+                .AnyAsync(x => x.TableName == tableName && x.SequenceNumber > headSequence, cancellationToken).ConfigureAwait(false);
+            if (!behind)
+            {
+                return null;
+            }
+
+            var again = await ReadStateAsync(tableName, cancellationToken).ConfigureAwait(false);
+            return again is not null && again.LastSequence == state.LastSequence && again.LastHash == state.LastHash
+                ? new ChainFailure(AuditFailureKind.RecordsBeyondHead,
+                    $"UNTRACKED RECORDS! Audit entries of table '{tableName}' exist behind the chain head. They were added without going through the audit trail.")
+                : null;
         }
     }
 }

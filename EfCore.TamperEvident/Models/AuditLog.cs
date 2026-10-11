@@ -36,6 +36,13 @@ namespace EfCore.TamperEvident.Models
         /// <summary>Deterministic JSON with the new values (inserts and updates).</summary>
         public string? NewValues { get; set; }
 
+        /// <summary>
+        /// Deterministic JSON with the context of the change: the reason given through <see cref="AuditScope"/>, the
+        /// trace id of the request, and whatever <see cref="Configuration.TamperEvidentOptions.MetadataProvider"/> adds.
+        /// <c>null</c> when there is none.
+        /// </summary>
+        public string? Metadata { get; set; }
+
         /// <summary>The user the change is attributed to.</summary>
         [MaxLength(256)]
         public required string UserId { get; set; }
@@ -50,7 +57,7 @@ namespace EfCore.TamperEvident.Models
         public long SequenceNumber { get; set; }
 
         /// <summary>See <see cref="AuditHashVersion"/>.</summary>
-        public int HashVersion { get; set; } = AuditHashVersion.Canonical;
+        public int HashVersion { get; set; } = AuditHashVersion.Current;
 
         /// <summary>Identifier of the HMAC key that sealed the entry (<c>null</c> when no key id is configured).</summary>
         [MaxLength(64)]
