@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using EfCore.TamperEvident.Extensions;
+using EfCore.TamperEvident.Internal;
 using EfCore.TamperEvident.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -18,8 +19,11 @@ namespace EfCore.TamperEvident.Services
         private static readonly string[] CsvHeader =
         {
             "Id", "TableName", "RecordId", "ActionType", "UserId", "TimestampUtc", "SequenceNumber",
-            "HashVersion", "KeyId", "PreviousHash", "CurrentHash", "OldValues", "NewValues"
+            "HashVersion", "KeyId", "PreviousHash", "CurrentHash", "OldValues", "NewValues", "Metadata"
         };
+
+        /// <summary>The version of the evidence bundle format written by <see cref="WriteEvidenceBundleAsync"/>.</summary>
+        public const int EvidenceFormat = 2;
 
         /// <summary>Writes one JSON object per line (JSON Lines), streamed.</summary>
         /// <param name="output">The destination.</param>
@@ -33,7 +37,7 @@ namespace EfCore.TamperEvident.Services
             await using var writer = new StreamWriter(output, new UTF8Encoding(false), 4096, leaveOpen: true);
             await foreach (var log in logs.AsNoTracking().AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                await writer.WriteLineAsync(JsonSerializer.Serialize(ToDto(log))).ConfigureAwait(false);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(EvidenceRecord.From(log), EvidenceRecord.Json)).ConfigureAwait(false);
             }
         }
 
@@ -61,16 +65,17 @@ namespace EfCore.TamperEvident.Services
                     log.SequenceNumber.ToString(CultureInfo.InvariantCulture),
                     log.HashVersion.ToString(CultureInfo.InvariantCulture),
                     log.KeyId ?? string.Empty, log.PreviousHash, log.CurrentHash,
-                    log.OldValues ?? string.Empty, log.NewValues ?? string.Empty
+                    log.OldValues ?? string.Empty, log.NewValues ?? string.Empty, log.Metadata ?? string.Empty
                 };
                 await writer.WriteLineAsync(string.Join(",", cells.Select(Csv))).ConfigureAwait(false);
             }
         }
 
         /// <summary>
-        /// Writes an evidence bundle: for every table the verification result, the chain head and all entries
-        /// in chain order, plus when and by which library version it was produced. Hand it to an auditor together
-        /// with the anchors that were received outside of the database.
+        /// Writes an evidence bundle: for every table the signed chain head, the verification result and all entries in
+        /// chain order, plus when and by which library version it was produced. Hand it to an auditor together with the
+        /// anchors that were received outside of the database: <see cref="AuditEvidence.VerifyBundleAsync"/> (or the
+        /// <c>tamper-evident verify</c> command) checks it again without access to the database.
         /// </summary>
         /// <param name="output">The destination.</param>
         /// <param name="context">The context that stores the audit trail.</param>
@@ -112,6 +117,7 @@ namespace EfCore.TamperEvident.Services
             }
 
             writer.WriteStartObject();
+            writer.WriteNumber("format", EvidenceFormat);
             writer.WriteString("generatedUtc", DateTimeOffset.UtcNow);
             writer.WriteString("generator", "EfCore.TamperEvident " + (typeof(AuditExporter).Assembly
                 .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "2"));
@@ -121,10 +127,24 @@ namespace EfCore.TamperEvident.Services
             {
                 IEnumerable<string>? tableAnchors = null;
                 anchors?.TryGetValue(table, out tableAnchors);
+                // The head is read first and only the entries it covers are written, so the bundle is a consistent
+                // snapshot even while new entries are appended.
+                var head = await context.Set<AuditChainState>().AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.TableName == table, cancellationToken).ConfigureAwait(false);
                 var verification = await verifier.VerifyTableIntegrityAsync(table, tableAnchors, cancellationToken).ConfigureAwait(false);
 
                 writer.WriteStartObject();
                 writer.WriteString("table", table);
+                if (head is null)
+                {
+                    writer.WriteNull("head");
+                }
+                else
+                {
+                    writer.WritePropertyName("head");
+                    JsonSerializer.Serialize(writer, EvidenceHead.From(head), EvidenceRecord.Json);
+                }
+
                 writer.WriteStartObject("verification");
                 writer.WriteBoolean("isValid", verification.IsValid);
                 writer.WriteString("result", verification.Failure.ToString());
@@ -133,13 +153,21 @@ namespace EfCore.TamperEvident.Services
                 writer.WriteNumber("anchorsMatched", verification.AnchorsMatched);
                 writer.WriteString("headHash", verification.HeadHash);
                 writer.WriteNumber("headSequence", verification.HeadSequence);
+                writer.WriteNumber("redactedRecords", verification.RedactedRecords);
                 writer.WriteEndObject();
 
                 writer.WriteStartArray("records");
-                var query = context.AuditLogs().ForTable(table).OrderBy(x => x.SequenceNumber).ThenBy(x => x.TimestampTicks);
-                await foreach (var log in query.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
+                var query = context.AuditLogs().ForTable(table);
+                if (head is not null)
                 {
-                    JsonSerializer.Serialize(writer, ToDto(log));
+                    var last = head.LastSequence;
+                    query = query.Where(x => x.SequenceNumber <= last);
+                }
+
+                await foreach (var log in query.OrderBy(x => x.SequenceNumber).ThenBy(x => x.TimestampTicks)
+                    .AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
+                {
+                    JsonSerializer.Serialize(writer, EvidenceRecord.From(log), EvidenceRecord.Json);
                     await DrainAsync(force: false).ConfigureAwait(false);
                 }
 
@@ -163,22 +191,5 @@ namespace EfCore.TamperEvident.Services
                 ? "\"" + value.Replace("\"", "\"\"") + "\""
                 : value;
         }
-
-        private static object ToDto(AuditLog log) => new
-        {
-            id = log.Id,
-            tableName = log.TableName,
-            recordId = log.RecordId,
-            actionType = log.ActionType,
-            userId = log.UserId,
-            timestampUtc = log.TimestampUtc,
-            sequenceNumber = log.SequenceNumber,
-            hashVersion = log.HashVersion,
-            keyId = log.KeyId,
-            previousHash = log.PreviousHash,
-            currentHash = log.CurrentHash,
-            oldValues = log.OldValues,
-            newValues = log.NewValues
-        };
     }
 }
