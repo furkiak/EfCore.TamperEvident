@@ -94,7 +94,23 @@ namespace EfCore.TamperEvident.Services
                 ? await verifier.GetAuditedTablesAsync(cancellationToken).ConfigureAwait(false)
                 : new[] { tableName };
 
-            await using var writer = new Utf8JsonWriter(output, new JsonWriterOptions { Indented = true });
+            // A Utf8JsonWriter that targets a Stream flushes synchronously when its buffer fills up, which web servers
+            // forbid. It writes into memory instead and the buffer is copied to the stream asynchronously.
+            var buffer = new System.Buffers.ArrayBufferWriter<byte>(16 * 1024);
+            using var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = true });
+
+            async Task DrainAsync(bool force)
+            {
+                if (!force && writer.BytesPending + buffer.WrittenCount < 32 * 1024)
+                {
+                    return;
+                }
+
+                writer.Flush();
+                await output.WriteAsync(buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+                buffer.Clear();
+            }
+
             writer.WriteStartObject();
             writer.WriteString("generatedUtc", DateTimeOffset.UtcNow);
             writer.WriteString("generator", "EfCore.TamperEvident " + (typeof(AuditExporter).Assembly
@@ -124,15 +140,16 @@ namespace EfCore.TamperEvident.Services
                 await foreach (var log in query.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
                 {
                     JsonSerializer.Serialize(writer, ToDto(log));
+                    await DrainAsync(force: false).ConfigureAwait(false);
                 }
 
                 writer.WriteEndArray();
                 writer.WriteEndObject();
-                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
             writer.WriteEndArray();
             writer.WriteEndObject();
+            await DrainAsync(force: true).ConfigureAwait(false);
         }
 
         private static string Csv(string value)

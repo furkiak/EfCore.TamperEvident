@@ -163,7 +163,8 @@ namespace EfCore.TamperEvident.Services
                 Duration = stopwatch.Elapsed,
                 Message = checkedCount == 0
                     ? "No audit logs found for the specified table."
-                    : $"All verifications passed successfully! The hash chain is intact, and {matchedAnchors} anchors were successfully verified."
+                    : "All verifications passed successfully! The hash chain is intact, and " +
+                      (matchedAnchors == 1 ? "1 anchor was" : $"{matchedAnchors} anchors were") + " successfully verified."
             };
         }
 
