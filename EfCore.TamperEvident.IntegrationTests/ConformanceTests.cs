@@ -162,7 +162,7 @@ namespace EfCore.TamperEvident.IntegrationTests
         public async Task ParallelWritersOfSeveralTables_DoNotDeadlock()
         {
             await using var database = await OpenAsync();
-            await Task.WhenAll(Enumerable.Range(0, 6).Select(w => Task.Run(async () =>
+            await Task.WhenAll(Enumerable.Range(0, 12).Select(w => Task.Run(async () =>
             {
                 for (var i = 0; i < 6; i++)
                 {
@@ -185,7 +185,7 @@ namespace EfCore.TamperEvident.IntegrationTests
             await using var verify = database.CreateContext();
             var report = await VerifierFor(verify, database).VerifyAllAsync();
             Assert.True(report.IsValid, report.Message);
-            Assert.Equal(72, report.RecordsChecked);
+            Assert.Equal(144, report.RecordsChecked);
         }
 
         [SkippableFact]

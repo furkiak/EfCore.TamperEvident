@@ -232,8 +232,13 @@ namespace EfCore.TamperEvident.Internal
             {
                 DatabaseProvider.SqlServer => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WITH (UPDLOCK, ROWLOCK) WHERE {key} = {{0}}",
-                    $"IF NOT EXISTS (SELECT 1 FROM {chainTable} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
-                    $"INSERT INTO {chainTable} ({written}) VALUES ({values})",
+                    // The existence check and the insert are one statement: outside a transaction a separate IF
+                    // would release its range lock before the INSERT runs. Losing the race anyway (a duplicate key,
+                    // error 2601/2627) just means another writer created the head first.
+                    $"BEGIN TRY " +
+                    $"INSERT INTO {chainTable} ({written}) SELECT {values} " +
+                    $"WHERE NOT EXISTS (SELECT 1 FROM {chainTable} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
+                    $"END TRY BEGIN CATCH IF ERROR_NUMBER() NOT IN (2601, 2627) THROW; END CATCH",
                     update, insertLogs),
 
                 DatabaseProvider.PostgreSql => new AuditSqlCommands(

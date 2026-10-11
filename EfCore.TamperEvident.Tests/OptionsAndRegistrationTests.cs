@@ -152,8 +152,9 @@ namespace EfCore.TamperEvident.Tests
 
             var sqlServer = Internal.AuditSqlCommands.Build(db, DatabaseProvider.SqlServer);
             Assert.Contains("WITH (UPDLOCK, ROWLOCK)", sqlServer.SelectForUpdate);
-            Assert.Contains("IF NOT EXISTS", sqlServer.InsertIfMissing);
+            Assert.Contains("WHERE NOT EXISTS", sqlServer.InsertIfMissing);
             Assert.Contains("HOLDLOCK", sqlServer.InsertIfMissing);
+            Assert.Contains("BEGIN TRY", sqlServer.InsertIfMissing);
 
             var postgres = Internal.AuditSqlCommands.Build(db, DatabaseProvider.PostgreSql);
             Assert.EndsWith("FOR UPDATE", postgres.SelectForUpdate);
