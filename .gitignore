@@ -1,0 +1,39 @@
+## .NET build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+*.nupkg
+*.snupkg
+
+## IDE / user specific files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+launchSettings.local.json
+
+## Test & coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.trx
+
+## Local databases produced by the samples and tests
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Node tooling (screenshot / asset scripts)
+node_modules/

@@ -1,45 +1,29 @@
-using System;
-using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Internal;
 
 namespace EfCore.TamperEvident.Services
 {
+    /// <summary>
+    /// Low level helpers that are useful when verifying or exporting audit data yourself.
+    /// </summary>
     public static class SecurityHelper
-    { 
-        public static string GetLockQuery(DatabaseProvider provider)
-        {
-            return provider switch
-            {
-                DatabaseProvider.SqlServer => "SELECT * FROM AuditChainStates WITH (UPDLOCK, ROWLOCK) WHERE TableName = {0}",
-                DatabaseProvider.PostgreSql => "SELECT * FROM \"AuditChainStates\" WHERE \"TableName\" = {0} FOR UPDATE",
-                DatabaseProvider.MySql => "SELECT * FROM AuditChainStates WHERE TableName = {0} FOR UPDATE",
-                _ => throw new NotSupportedException("Unsupported database provider")
-            };
-        }
-        public static string? SerializeDeterministic(object? obj)
-        {
-            if (obj == null) return null;
+    {
+        /// <summary>
+        /// Serializes an object to JSON whose bytes depend only on the data: property names are sorted with an
+        /// ordinal comparison (nested objects included), so the result is identical on every machine and culture.
+        /// </summary>
+        /// <param name="obj">The value to serialize.</param>
+        /// <returns>The JSON, or <c>null</c> when <paramref name="obj"/> is <c>null</c>.</returns>
+        public static string? SerializeDeterministic(object? obj) => AuditSerializer.SerializeObject(obj);
 
-            var dictionary = JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(obj));
-            var sortedDict = new SortedDictionary<string, object?>(dictionary ?? new Dictionary<string, object?>());
-            return JsonSerializer.Serialize(sortedDict);
-        } 
+        /// <summary>Computes HMAC-SHA256 of <paramref name="rawData"/> and returns it as lowercase hex.</summary>
+        /// <param name="rawData">The data to authenticate.</param>
+        /// <param name="secretKey">The secret.</param>
         public static string ComputeHash(string rawData, string? secretKey)
         {
-            var keyBytes = Encoding.UTF8.GetBytes(secretKey ?? string.Empty);
-            using (var hmac = new HMACSHA256(keyBytes))
-            {
-                byte[] bytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(rawData));
-                StringBuilder sb = new StringBuilder();
-                foreach (byte b in bytes)
-                {
-                    sb.Append(b.ToString("x2"));
-                }
-                return sb.ToString();
-            }
+            var key = Encoding.UTF8.GetBytes(secretKey ?? string.Empty);
+            return Convert.ToHexString(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(rawData))).ToLowerInvariant();
         }
     }
 }

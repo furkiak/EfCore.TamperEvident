@@ -1,247 +1,622 @@
+using System.Data.Common;
+using System.Runtime.CompilerServices;
 using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Internal;
 using EfCore.TamperEvident.Models;
-using EfCore.TamperEvident.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
-using System.Runtime.CompilerServices;
 
 namespace EfCore.TamperEvident.Interceptors
 {
-    internal class AuditContextState
-    {
-        public IDbContextTransaction? Transaction { get; set; }
-        public bool IsTransactionOwner { get; set; }
-        public bool IsSavingLogs { get; set; }
-        public List<AuditEntryPrep> Preps { get; set; } = new();
-    }
-    internal class AuditEntryPrep
-    {
-        public required Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry Entry { get; set; }
-        public required string TableName { get; set; }
-        public required string Action { get; set; }
-        public string? OldValues { get; set; }
-        public string? NewValues { get; set; }
-    }
-    public class TamperEvidentInterceptor : SaveChangesInterceptor
+    /// <summary>
+    /// Seals every audited change into a per-table HMAC hash chain, atomically with the change itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Saving happens in two phases. Before the data is written the interceptor captures what is about to change and
+    /// makes sure a transaction exists (it starts one unless the caller already has one). After the data is written,
+    /// and the database has generated its keys, the chain head of every affected table is locked, the new entries are
+    /// chained and written, and the transaction is committed. Both <c>SaveChanges</c> and <c>SaveChangesAsync</c> are supported.
+    /// </para>
+    /// <para>
+    /// The interceptor is thread-safe and can be shared by many <see cref="DbContext"/> instances.
+    /// The options are read when the interceptor is created.
+    /// </para>
+    /// </remarks>
+    public class TamperEvidentInterceptor : SaveChangesInterceptor, IDbTransactionInterceptor
     {
         private readonly TamperEvidentOptions _options;
-        private static readonly ConditionalWeakTable<DbContext, AuditContextState> _stateMap = new();
+        private readonly AuditKeyRing _keys;
+        private readonly AuditEntryReader _reader;
+        private readonly AnchorDispatcher _dispatcher;
+        private readonly ConditionalWeakTable<DbContext, AuditSession> _sessions = new();
+        private readonly ConditionalWeakTable<DbContext, QueuedAnchors> _queuedAnchors = new();
+
+        /// <summary>Creates the interceptor. The options are validated immediately.</summary>
+        /// <param name="options">The configuration.</param>
+        /// <exception cref="InvalidOperationException">The options cannot produce a trustworthy audit trail (for example no secret key).</exception>
         public TamperEvidentInterceptor(TamperEvidentOptions options)
         {
+            ArgumentNullException.ThrowIfNull(options);
+            options.Validate();
+
             _options = options;
+            _keys = AuditKeyRing.Create(options);
+            _reader = new AuditEntryReader(options, _keys);
+            _dispatcher = new AnchorDispatcher(options);
         }
-        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
-            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken ct = default)
+
+        /// <summary>
+        /// Waits until all anchors that are being delivered in the background reached their publisher.
+        /// Call it before the process exits, for example from <c>IHostApplicationLifetime.ApplicationStopping</c>.
+        /// </summary>
+        /// <param name="cancellationToken">A token to stop waiting.</param>
+        public Task FlushAnchorsAsync(CancellationToken cancellationToken = default) => _dispatcher.FlushAsync(cancellationToken);
+
+        #region SaveChanges (phase one)
+
+        /// <inheritdoc />
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
         {
             var context = eventData.Context;
-            if (context == null) return result;
-
-            if (_stateMap.TryGetValue(context, out var existingState) && existingState.IsSavingLogs)
+            var session = context is null ? null : Prepare(context);
+            if (session is null)
+            {
                 return result;
+            }
+
+            try
+            {
+                BeginTransaction(context!, session);
+            }
+            catch
+            {
+                Abort(context!, session);
+                throw;
+            }
+
+            return result;
+        }
+
+        /// <inheritdoc />
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            var context = eventData.Context;
+            var session = context is null ? null : Prepare(context);
+            if (session is null)
+            {
+                return result;
+            }
+
+            try
+            {
+                await BeginTransactionAsync(context!, session, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await AbortAsync(context!, session).ConfigureAwait(false);
+                throw;
+            }
+
+            return result;
+        }
+
+        private AuditSession? Prepare(DbContext context)
+        {
+            if (_sessions.TryGetValue(context, out var existing))
+            {
+                if (existing.IsWritingAudit)
+                {
+                    // The nested save that writes the audit entries themselves.
+                    return null;
+                }
+
+                // A session that was never completed (the earlier save was interrupted).
+                Abort(context, existing);
+            }
 
             var entries = context.ChangeTracker.Entries()
-                .Where(e => e.State == EntityState.Added || e.State == EntityState.Modified || e.State == EntityState.Deleted)
+                .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
                 .ToList();
+            if (entries.Count == 0)
+            {
+                return null;
+            }
 
-            if (!entries.Any()) return result;
-
-
-            var state = new AuditContextState();
-            _stateMap.AddOrUpdate(context, state);
-
-
-            state.Transaction = context.Database.CurrentTransaction?.GetDbTransaction() == null
-                                ? await context.Database.BeginTransactionAsync(ct)
-                                : context.Database.CurrentTransaction;
-            state.IsTransactionOwner = context.Database.CurrentTransaction == state.Transaction;
-
-
+            var preps = new List<AuditPrep>();
             foreach (var entry in entries)
             {
-                string? tableName = entry.Metadata.GetTableName();
-                if (string.IsNullOrEmpty(tableName)) continue;
-                if (tableName == "AuditLogs" || tableName == "AuditChainStates") continue;
-                if (_options.ExcludedTables.Contains(tableName)) continue;
-
-                if (entry.State == EntityState.Added && !_options.TrackedOperations.HasFlag(AuditOperation.Insert)) continue;
-                if (entry.State == EntityState.Modified && !_options.TrackedOperations.HasFlag(AuditOperation.Update)) continue;
-                if (entry.State == EntityState.Deleted && !_options.TrackedOperations.HasFlag(AuditOperation.Delete)) continue;
-
-                bool isSoftDelete = false;
-                string? oldJson = null;
-                string? newJson = null;
-
-                if (entry.State == EntityState.Added)
+                if (!_reader.ShouldAudit(entry, out var tableName))
                 {
-                    newJson = SecurityHelper.SerializeDeterministic(entry.CurrentValues.ToObject());
+                    continue;
                 }
-                else if (entry.State == EntityState.Deleted)
-                {
-                    oldJson = SecurityHelper.SerializeDeterministic(entry.OriginalValues.ToObject());
-                }
-                else if (entry.State == EntityState.Modified)
-                {
-                    var oldValuesDict = new System.Collections.Generic.Dictionary<string, object?>();
-                    var newValuesDict = new System.Collections.Generic.Dictionary<string, object?>();
 
-                    foreach (var prop in entry.Properties)
-                    {
-                        if (prop.IsModified)
+                var prep = new AuditPrep(entry, tableName, entry.State.ToString());
+                switch (entry.State)
+                {
+                    case EntityState.Modified:
+                        var change = _reader.ReadModified(entry, tableName);
+                        if (change is null)
                         {
-                            oldValuesDict[prop.Metadata.Name] = prop.OriginalValue;
-                            newValuesDict[prop.Metadata.Name] = prop.CurrentValue;
-
-                            if (prop.Metadata.Name == _options.SoftDeleteColumnName)
-                            {
-                                if (prop.OriginalValue is bool oldVal && oldVal == false &&
-                                    prop.CurrentValue is bool newVal && newVal == true)
-                                {
-                                    isSoftDelete = true;
-                                }
-                            }
+                            continue;
                         }
-                    }
 
-                    oldJson = SecurityHelper.SerializeDeterministic(oldValuesDict);
-                    newJson = SecurityHelper.SerializeDeterministic(newValuesDict);
+                        prep.Action = change.Value.Action;
+                        prep.OldValues = change.Value.OldValues;
+                        prep.NewValues = change.Value.NewValues;
+                        prep.RecordId = AuditEntryReader.FormatRecordId(entry, original: true);
+                        break;
+                    case EntityState.Deleted:
+                        prep.OldValues = _reader.ReadAll(entry, tableName, original: true);
+                        prep.RecordId = AuditEntryReader.FormatRecordId(entry, original: true);
+                        break;
+                    default:
+                        // Inserts are read in phase two, when keys and defaults generated by the database are known.
+                        break;
                 }
 
-                state.Preps.Add(new AuditEntryPrep
-                {
-                    Entry = entry,
-                    TableName = tableName,
-                    Action = isSoftDelete ? "SoftDelete" : entry.State.ToString(),
-                    OldValues = oldJson,
-                    NewValues = newJson
-                });
+                preps.Add(prep);
             }
 
-            return result;
+            if (preps.Count == 0)
+            {
+                return null;
+            }
+
+            var session = new AuditSession(AuditModelInfo.Resolve(context, _options), ResolveUserId(context), entries);
+            session.Preps.AddRange(preps);
+            _sessions.AddOrUpdate(context, session);
+            return session;
         }
 
+        private string ResolveUserId(DbContext context)
+        {
+            var user = AuditScope.CurrentUserId ?? _options.UserIdProvider?.Invoke(context);
+            if (string.IsNullOrWhiteSpace(user))
+            {
+                user = _options.DefaultUserId;
+            }
 
-        public override async ValueTask<int> SavedChangesAsync(
-            SaveChangesCompletedEventData eventData, int result, CancellationToken ct = default)
+            return user.Length > 256 ? user[..256] : user;
+        }
+
+        private static void BeginTransaction(DbContext context, AuditSession session)
+        {
+            if (!session.Info.IsRelational)
+            {
+                return;
+            }
+
+            if (context.Database.CurrentTransaction is { } existing)
+            {
+                session.Transaction = existing;
+            }
+            else if (System.Transactions.Transaction.Current is not null)
+            {
+                session.UsesAmbientTransaction = true;
+            }
+            else
+            {
+                session.Transaction = context.Database.BeginTransaction();
+                session.OwnsTransaction = true;
+            }
+        }
+
+        private static async Task BeginTransactionAsync(DbContext context, AuditSession session, CancellationToken cancellationToken)
+        {
+            if (!session.Info.IsRelational)
+            {
+                return;
+            }
+
+            if (context.Database.CurrentTransaction is { } existing)
+            {
+                session.Transaction = existing;
+            }
+            else if (System.Transactions.Transaction.Current is not null)
+            {
+                session.UsesAmbientTransaction = true;
+            }
+            else
+            {
+                session.Transaction = await context.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                session.OwnsTransaction = true;
+            }
+        }
+
+        #endregion
+
+        #region SaveChanges (phase two)
+
+        /// <inheritdoc />
+        public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
         {
             var context = eventData.Context;
-            if (context == null || !_stateMap.TryGetValue(context, out var state) || state.IsSavingLogs || !state.Preps.Any())
-                return result;
-
-
-            state.IsSavingLogs = true;
-            var tablesToAnchor = new Dictionary<string, AuditChainState>();
-            var cachedChainStates = new Dictionary<string, AuditChainState>();
-            long lastTicks = DateTime.UtcNow.Ticks;
-
-            foreach (var prep in state.Preps)
+            if (context is null || !_sessions.TryGetValue(context, out var session) || session.IsWritingAudit)
             {
-
-                string primaryKey = prep.Entry.Properties.FirstOrDefault(x => x.Metadata.IsPrimaryKey())?.CurrentValue?.ToString() ?? "N/A";
-
-                if (!cachedChainStates.TryGetValue(prep.TableName, out var chainState))
-                {
-                    string lockQuery = SecurityHelper.GetLockQuery(_options.DbProvider);
-                    chainState = await context.Set<AuditChainState>().FromSqlRaw(lockQuery, prep.TableName).FirstOrDefaultAsync(ct);
-
-                    if (chainState == null)
-                    {
-                        chainState = new AuditChainState { TableName = prep.TableName, LastHash = "GENESIS", UnanchoredCount = 0 };
-                        context.Add(chainState);
-                    }
-                    cachedChainStates[prep.TableName] = chainState;
-                }
-
-                long timeTicks = DateTime.UtcNow.Ticks;
-                if (timeTicks <= lastTicks)
-                {
-                    timeTicks = lastTicks + 1;
-                }
-                lastTicks = timeTicks;
-                string rawData = $"{chainState.LastHash}{prep.TableName}{primaryKey}{prep.Action}{prep.OldValues}{prep.NewValues}{timeTicks}";
-                string currentHash = SecurityHelper.ComputeHash(rawData, _options.HmacSecretKey);
-
-                var auditLog = new AuditLog
-                {
-                    TableName = prep.TableName,
-                    RecordId = primaryKey,
-                    ActionType = prep.Action,
-                    OldValues = prep.OldValues,
-                    NewValues = prep.NewValues,
-                    TimestampTicks = timeTicks,
-                    PreviousHash = chainState.LastHash,
-                    CurrentHash = currentHash,
-                    UserId = "System"
-                };
-
-                context.Add(auditLog);
-
-                chainState.LastHash = currentHash;
-                chainState.UnanchoredCount++;
-                chainState.LastModified = DateTime.UtcNow;
-
-                if (chainState.UnanchoredCount >= _options.AnchorThreshold)
-                {
-                    tablesToAnchor[prep.TableName] = chainState;
-                    chainState.UnanchoredCount = 0;
-                }
+                return result;
             }
 
-
-            await context.SaveChangesAsync(ct);
-
-
-            if (state.IsTransactionOwner && state.Transaction != null)
-                await state.Transaction.CommitAsync(ct);
-
-            _stateMap.Remove(context);
-
-
-            if (tablesToAnchor.Any())
+            session.IsWritingAudit = true;
+            try
             {
-                var logger = _options.LoggerFactory?.CreateLogger<TamperEvidentInterceptor>() 
-                             ?? context.GetService<ILoggerFactory>()?.CreateLogger<TamperEvidentInterceptor>();
-                             
-                _ = Task.Run(async () => 
+                var now = _options.TimeProvider.GetUtcNow();
+                var chains = new Dictionary<string, AuditChainState>(StringComparer.Ordinal);
+                foreach (var table in OrderedTables(session))
                 {
-                    try
-                    {
-                        await SendAnchorsAsync(tablesToAnchor.Values.ToList());
-                    }
-                    catch (Exception ex)
-                    {
-                        logger?.LogError(ex, "Failed to send anchors.");
-                    }
-                });
+                    chains[table] = ChainStateStore.Lock(context, session.Info, table, now.UtcDateTime);
+                }
+
+                var anchors = Seal(context, session, chains, now);
+
+                var suspended = SuspendPending(session);
+                try
+                {
+                    context.SaveChanges();
+                }
+                finally
+                {
+                    ResumePending(suspended);
+                }
+
+                if (session.OwnsTransaction)
+                {
+                    session.Transaction!.Commit();
+                }
+
+                _sessions.Remove(context);
+                ScheduleAnchors(context, session, anchors).GetAwaiter().GetResult();
+            }
+            catch
+            {
+                Abort(context, session);
+                throw;
             }
 
             return result;
         }
 
-
-        public override Task SaveChangesFailedAsync(
-            DbContextErrorEventData eventData, CancellationToken ct = default)
+        /// <inheritdoc />
+        public override async ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
         {
-            if (eventData.Context != null && _stateMap.TryGetValue(eventData.Context, out var state))
+            var context = eventData.Context;
+            if (context is null || !_sessions.TryGetValue(context, out var session) || session.IsWritingAudit)
             {
-                if (state.IsTransactionOwner && state.Transaction != null)
-                    state.Transaction.Dispose();
-
-                _stateMap.Remove(eventData.Context);
+                return result;
             }
 
-            return base.SaveChangesFailedAsync(eventData, ct);
+            session.IsWritingAudit = true;
+            try
+            {
+                var now = _options.TimeProvider.GetUtcNow();
+                var chains = new Dictionary<string, AuditChainState>(StringComparer.Ordinal);
+                foreach (var table in OrderedTables(session))
+                {
+                    chains[table] = await ChainStateStore.LockAsync(context, session.Info, table, now.UtcDateTime, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                var anchors = Seal(context, session, chains, now);
+
+                var suspended = SuspendPending(session);
+                try
+                {
+                    await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ResumePending(suspended);
+                }
+
+                if (session.OwnsTransaction)
+                {
+                    await session.Transaction!.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                _sessions.Remove(context);
+                await ScheduleAnchors(context, session, anchors, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await AbortAsync(context, session).ConfigureAwait(false);
+                throw;
+            }
+
+            return result;
         }
 
-        private async Task SendAnchorsAsync(List<AuditChainState> states)
+        // Chain heads are always locked in the same order, which rules out deadlocks between concurrent saves.
+        private static List<string> OrderedTables(AuditSession session) =>
+            session.Preps.Select(p => p.TableName).Distinct(StringComparer.Ordinal).OrderBy(t => t, StringComparer.Ordinal).ToList();
+
+        /// <summary>Chains the captured changes onto the (locked) chain heads and adds the audit entries to the context.</summary>
+        private List<AuditAnchor> Seal(
+            DbContext context, AuditSession session, Dictionary<string, AuditChainState> chains, DateTimeOffset now)
         {
-            var publisher = _options.CustomAnchorPublisher ?? new SmtpAnchorPublisher(_options, _options.LoggerFactory);
-            foreach (var state in states)
+            var key = _keys.CurrentKey;
+            var keyId = _keys.CurrentKeyId;
+            var anchors = new List<AuditAnchor>();
+            var logs = new List<AuditLog>(session.Preps.Count);
+
+            foreach (var group in session.Preps.GroupBy(p => p.TableName, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
             {
-                await publisher.SendAnchorAsync(state.TableName, state.LastHash, state.UnanchoredCount);
+                var chain = chains[group.Key];
+                var previousHash = chain.LastHash;
+                var sequence = chain.LastSequence;
+
+                foreach (var prep in group)
+                {
+                    if (prep.RecordId is null)
+                    {
+                        prep.RecordId = AuditEntryReader.FormatRecordId(prep.Entry, original: false);
+                        prep.NewValues = _reader.ReadAll(prep.Entry, prep.TableName, original: false);
+                    }
+
+                    sequence++;
+                    var log = new AuditLog
+                    {
+                        TableName = prep.TableName,
+                        RecordId = prep.RecordId!,
+                        ActionType = prep.Action,
+                        OldValues = prep.OldValues,
+                        NewValues = prep.NewValues,
+                        UserId = session.UserId,
+                        TimestampTicks = now.UtcTicks,
+                        SequenceNumber = sequence,
+                        HashVersion = AuditHashVersion.Canonical,
+                        KeyId = keyId,
+                        PreviousHash = previousHash,
+                        CurrentHash = string.Empty
+                    };
+                    log.CurrentHash = AuditHasher.ComputeRecordHash(key, log);
+                    logs.Add(log);
+                    previousHash = log.CurrentHash;
+
+                    chain.UnanchoredCount++;
+                    if (_options.AnchorThreshold > 0 && chain.UnanchoredCount >= _options.AnchorThreshold)
+                    {
+                        anchors.Add(new AuditAnchor(group.Key, log.CurrentHash, sequence, chain.UnanchoredCount, now));
+                        chain.UnanchoredCount = 0;
+                    }
+                }
+
+                chain.LastHash = previousHash;
+                chain.LastSequence = sequence;
+                chain.LastModified = now.UtcDateTime;
+                chain.KeyId = keyId;
+                chain.Mac = AuditHasher.ComputeStateMac(key, chain.TableName, chain.LastHash, chain.LastSequence, keyId);
+            }
+
+            context.Set<AuditLog>().AddRange(logs);
+            return anchors;
+        }
+
+        // SaveChanges(acceptAllChangesOnSuccess: false) leaves the audited entities pending. They must not be saved
+        // a second time by the nested save that writes the audit entries, so they are parked and restored afterwards.
+        private static List<(EntityEntry Entry, EntityState State)>? SuspendPending(AuditSession session)
+        {
+            if (session.PendingEntries.Count == 0 || !IsPending(session.PendingEntries[0].State))
+            {
+                return null;
+            }
+
+            var suspended = session.PendingEntries
+                .Where(e => IsPending(e.State))
+                .Select(e => (e, e.State))
+                .ToList();
+            foreach (var (entry, _) in suspended)
+            {
+                entry.State = EntityState.Unchanged;
+            }
+
+            return suspended;
+        }
+
+        private static void ResumePending(List<(EntityEntry Entry, EntityState State)>? suspended)
+        {
+            if (suspended is null)
+            {
+                return;
+            }
+
+            foreach (var (entry, state) in suspended)
+            {
+                entry.State = state;
             }
         }
+
+        private static bool IsPending(EntityState state) => state is EntityState.Added or EntityState.Modified or EntityState.Deleted;
+
+        #endregion
+
+        #region Failure handling
+
+        /// <inheritdoc />
+        public override void SaveChangesFailed(DbContextErrorEventData eventData)
+        {
+            if (eventData.Context is { } context)
+            {
+                Abort(context);
+            }
+        }
+
+        /// <inheritdoc />
+        public override async Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is { } context)
+            {
+                await AbortAsync(context).ConfigureAwait(false);
+            }
+        }
+
+        /// <inheritdoc />
+        public override void SaveChangesCanceled(DbContextEventData eventData)
+        {
+            if (eventData.Context is { } context)
+            {
+                Abort(context);
+            }
+        }
+
+        /// <inheritdoc />
+        public override async Task SaveChangesCanceledAsync(DbContextEventData eventData, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is { } context)
+            {
+                await AbortAsync(context).ConfigureAwait(false);
+            }
+        }
+
+        // Rolls back the transaction this interceptor started. A transaction that belongs to the caller is left alone.
+        private void Abort(DbContext context, AuditSession? session = null)
+        {
+            if (session is null && !_sessions.TryGetValue(context, out session))
+            {
+                return;
+            }
+
+            _sessions.Remove(context);
+            var transaction = session.Transaction;
+            if (!session.OwnsTransaction || transaction is null)
+            {
+                return;
+            }
+
+            session.Transaction = null;
+            try
+            {
+                transaction.Rollback();
+            }
+            catch (Exception)
+            {
+                // The connection may be gone already; disposing below releases whatever is left.
+            }
+
+            transaction.Dispose();
+        }
+
+        private async Task AbortAsync(DbContext context, AuditSession? session = null)
+        {
+            if (session is null && !_sessions.TryGetValue(context, out session))
+            {
+                return;
+            }
+
+            _sessions.Remove(context);
+            var transaction = session.Transaction;
+            if (!session.OwnsTransaction || transaction is null)
+            {
+                return;
+            }
+
+            session.Transaction = null;
+            try
+            {
+                await transaction.RollbackAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The connection may be gone already; disposing below releases whatever is left.
+            }
+
+            await transaction.DisposeAsync().ConfigureAwait(false);
+        }
+
+        #endregion
+
+        #region Anchors
+
+        // An anchor must only leave the process once the entries it vouches for are committed.
+        private Task ScheduleAnchors(DbContext context, AuditSession session, List<AuditAnchor> anchors, CancellationToken cancellationToken = default)
+        {
+            if (anchors.Count == 0 || !_dispatcher.IsEnabled)
+            {
+                return Task.CompletedTask;
+            }
+
+            // Created now, while the context is alive: delivery may happen after it was disposed.
+            var logger = LoggerOf(context);
+
+            if (session.OwnsTransaction || !session.Info.IsRelational)
+            {
+                return _dispatcher.DispatchAsync(anchors, logger, cancellationToken);
+            }
+
+            if (session.UsesAmbientTransaction)
+            {
+                System.Transactions.Transaction.Current!.TransactionCompleted += (_, e) =>
+                {
+                    if (e.Transaction?.TransactionInformation.Status == System.Transactions.TransactionStatus.Committed)
+                    {
+                        _ = _dispatcher.DispatchAsync(anchors, logger, CancellationToken.None);
+                    }
+                };
+                return Task.CompletedTask;
+            }
+
+            // The caller owns the transaction: hold the anchors back until it commits (or drop them on rollback).
+            var queue = _queuedAnchors.GetValue(context, _ => new QueuedAnchors(logger));
+            queue.Anchors.AddRange(anchors);
+            return Task.CompletedTask;
+        }
+
+        private ILogger? LoggerOf(DbContext context) =>
+            (_options.LoggerFactory ?? context.GetService<ILoggerFactory>())?.CreateLogger("EfCore.TamperEvident.Anchors");
+
+        private QueuedAnchors? TakeQueued(DbContext? context)
+        {
+            if (context is null || !_queuedAnchors.TryGetValue(context, out var queued))
+            {
+                return null;
+            }
+
+            _queuedAnchors.Remove(context);
+            return queued.Anchors.Count == 0 ? null : queued;
+        }
+
+        private sealed class QueuedAnchors
+        {
+            public QueuedAnchors(ILogger? logger) => Logger = logger;
+
+            public ILogger? Logger { get; }
+
+            public List<AuditAnchor> Anchors { get; } = new();
+        }
+
+        /// <inheritdoc />
+        public void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData)
+        {
+            var queued = TakeQueued(eventData.Context);
+            if (queued is not null)
+            {
+                _dispatcher.DispatchAsync(queued.Anchors, queued.Logger, CancellationToken.None).GetAwaiter().GetResult();
+            }
+        }
+
+        /// <inheritdoc />
+        public Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            var queued = TakeQueued(eventData.Context);
+            return queued is null
+                ? Task.CompletedTask
+                : _dispatcher.DispatchAsync(queued.Anchors, queued.Logger, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData) => TakeQueued(eventData.Context);
+
+        /// <inheritdoc />
+        public Task TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            TakeQueued(eventData.Context);
+            return Task.CompletedTask;
+        }
+
+        #endregion
     }
 }
