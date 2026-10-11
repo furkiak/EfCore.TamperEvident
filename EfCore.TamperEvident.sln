@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QuickStart", "samples\Quick
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EfCore.TamperEvident.AspNetCore.Tests", "EfCore.TamperEvident.AspNetCore.Tests\EfCore.TamperEvident.AspNetCore.Tests.csproj", "{894082A5-0EE3-40B6-A7E1-189F26627B45}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EfCore.TamperEvident.IntegrationTests", "EfCore.TamperEvident.IntegrationTests\EfCore.TamperEvident.IntegrationTests.csproj", "{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -85,6 +87,18 @@ Global
 		{894082A5-0EE3-40B6-A7E1-189F26627B45}.Release|x64.Build.0 = Release|Any CPU
 		{894082A5-0EE3-40B6-A7E1-189F26627B45}.Release|x86.ActiveCfg = Release|Any CPU
 		{894082A5-0EE3-40B6-A7E1-189F26627B45}.Release|x86.Build.0 = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|x64.Build.0 = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Debug|x86.Build.0 = Debug|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|x64.ActiveCfg = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|x64.Build.0 = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|x86.ActiveCfg = Release|Any CPU
+		{5C8514E4-6C46-416C-B8CE-93C6B07C72BB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

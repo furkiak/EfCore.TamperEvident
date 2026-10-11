@@ -73,6 +73,7 @@ namespace EfCore.TamperEvident.Interceptors
                 _sessions.Remove(context!);
                 var saved = context!.Database.CreateExecutionStrategy().Execute(() =>
                 {
+                    ChainStateStore.EnsureHeads(context, session.Info, TablesOf(session), NowUtc());
                     using var transaction = context.Database.BeginTransaction();
                     var count = context.SaveChanges();
                     transaction.Commit();
@@ -110,6 +111,7 @@ namespace EfCore.TamperEvident.Interceptors
                 _sessions.Remove(context!);
                 var saved = await context!.Database.CreateExecutionStrategy().ExecuteAsync(async ct =>
                 {
+                    await ChainStateStore.EnsureHeadsAsync(context, session.Info, TablesOf(session), NowUtc(), ct).ConfigureAwait(false);
                     await using var transaction = await context.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
                     var count = await context.SaveChangesAsync(ct).ConfigureAwait(false);
                     await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -223,7 +225,11 @@ namespace EfCore.TamperEvident.Interceptors
             return user.Length > 256 ? user[..256] : user;
         }
 
-        private static void BeginTransaction(DbContext context, AuditSession session)
+        private DateTime NowUtc() => _options.TimeProvider.GetUtcNow().UtcDateTime;
+
+        private static List<string> TablesOf(AuditSession session) => OrderedTables(session);
+
+        private void BeginTransaction(DbContext context, AuditSession session)
         {
             if (!session.Info.IsRelational)
             {
@@ -240,12 +246,13 @@ namespace EfCore.TamperEvident.Interceptors
             }
             else
             {
+                ChainStateStore.EnsureHeads(context, session.Info, TablesOf(session), NowUtc());
                 session.Transaction = context.Database.BeginTransaction();
                 session.OwnsTransaction = true;
             }
         }
 
-        private static async Task BeginTransactionAsync(DbContext context, AuditSession session, CancellationToken cancellationToken)
+        private async Task BeginTransactionAsync(DbContext context, AuditSession session, CancellationToken cancellationToken)
         {
             if (!session.Info.IsRelational)
             {
@@ -262,6 +269,7 @@ namespace EfCore.TamperEvident.Interceptors
             }
             else
             {
+                await ChainStateStore.EnsureHeadsAsync(context, session.Info, TablesOf(session), NowUtc(), cancellationToken).ConfigureAwait(false);
                 session.Transaction = await context.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
                 session.OwnsTransaction = true;
             }

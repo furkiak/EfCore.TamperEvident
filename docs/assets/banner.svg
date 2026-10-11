@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="t d">
+  <title id="t">EF Core Tamper-Evident Audit Trail</title>
+  <desc id="d">A chain of three glass blocks, linked by hashes, with a green shield that confirms the chain is intact.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a1030"/>
+      <stop offset=".55" stop-color="#171c4a"/>
+      <stop offset="1" stop-color="#2d1a55"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".05"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".85"/>
+      <stop offset=".3" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset=".7" stop-color="#fff" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".5"/>
+    </linearGradient>
+    <linearGradient id="block" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".26"/>
+      <stop offset="1" stop-color="#fff" stop-opacity=".07"/>
+    </linearGradient>
+    <linearGradient id="blockOk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34e07a" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#34e07a" stop-opacity=".10"/>
+    </linearGradient>
+    <radialGradient id="orb" cx=".32" cy=".24" r=".9">
+      <stop offset="0" stop-color="#b9ffd2"/>
+      <stop offset=".45" stop-color="#2fd36a"/>
+      <stop offset="1" stop-color="#0b7a3a"/>
+    </radialGradient>
+    <radialGradient id="sheen" cx=".12" cy=".05" r=".7">
+      <stop offset="0" stop-color="#fff" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="chainFlow" x1="0" x2="1">
+      <stop offset="0" stop-color="#6aa8ff"/>
+      <stop offset="1" stop-color="#b58bff"/>
+    </linearGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="70"/></filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="18" stdDeviation="16" flood-color="#000" flood-opacity=".38"/></filter>
+    <clipPath id="frame"><rect width="1280" height="420" rx="34"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="420" fill="url(#bg)"/>
+    <!-- colored light behind the glass -->
+    <circle cx="150" cy="40" r="210" fill="#2f6bff" opacity=".85" filter="url(#blur)"/>
+    <circle cx="1130" cy="60" r="190" fill="#ff4f9b" opacity=".62" filter="url(#blur)"/>
+    <circle cx="880" cy="430" r="230" fill="#12c9b8" opacity=".55" filter="url(#blur)"/>
+    <circle cx="420" cy="470" r="150" fill="#ffae45" opacity=".30" filter="url(#blur)"/>
+
+    <!-- main glass panel -->
+    <g filter="url(#drop)">
+      <rect x="36" y="36" width="1208" height="348" rx="40" fill="url(#glass)"/>
+    </g>
+    <rect x="36" y="36" width="1208" height="348" rx="40" fill="url(#sheen)"/>
+    <rect x="36.5" y="36.5" width="1207" height="347" rx="39.5" fill="none" stroke="url(#rim)" stroke-width="1.2"/>
+
+    <!-- text -->
+    <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fill="#fff">
+      <rect x="84" y="84" width="186" height="30" rx="15" fill="#fff" fill-opacity=".14" stroke="#fff" stroke-opacity=".35" stroke-width=".8"/>
+      <circle cx="104" cy="99" r="4.5" fill="#34e07a"/>
+      <text x="118" y="104" font-size="14" font-weight="600" fill-opacity=".92">HMAC-SHA256 chain</text>
+
+      <text x="84" y="190" font-size="56" font-weight="760" letter-spacing="-1.6">EF Core</text>
+      <text x="84" y="252" font-size="56" font-weight="760" letter-spacing="-1.6">Tamper-Evident</text>
+      <text x="84" y="304" font-size="23" font-weight="500" fill-opacity=".78">Zero-trust audit logging for Entity Framework Core.</text>
+      <text x="84" y="336" font-size="23" font-weight="500" fill-opacity=".78">Rewrite history? The chain breaks. Delete it? It shows.</text>
+    </g>
+
+    <!-- chain -->
+    <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" fill="#fff">
+      <!-- links -->
+      <g stroke="url(#chainFlow)" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9">
+        <line x1="832" y1="226" x2="836" y2="226"/>
+        <line x1="1012" y1="226" x2="1016" y2="226"/>
+      </g>
+      <g fill="#10173f" stroke="#8ab4ff" stroke-width="1.4">
+        <circle cx="850" cy="226" r="14"/>
+        <circle cx="1030" cy="226" r="14"/>
+      </g>
+      <g fill="none" stroke="#9fc4ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M846.2 229.2a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 0 0-5.1-5.1l-.8.8M853.8 222.8a3.6 3.6 0 0 0-5.1 0l-2.4 2.4a3.6 3.6 0 0 0 5.1 5.1l.8-.8"/>
+        <path d="M1026.2 229.2a3.6 3.6 0 0 0 5.1 0l2.4-2.4a3.6 3.6 0 0 0-5.1-5.1l-.8.8M1033.8 222.8a3.6 3.6 0 0 0-5.1 0l-2.4 2.4a3.6 3.6 0 0 0 5.1 5.1l.8-.8"/>
+      </g>
+
+      <!-- block 1 -->
+      <g filter="url(#drop)">
+        <rect x="690" y="140" width="142" height="172" rx="26" fill="url(#block)"/>
+      </g>
+      <rect x="690.5" y="140.5" width="141" height="171" rx="25.5" fill="none" stroke="url(#rim)" stroke-width="1"/>
+      <text x="710" y="176" font-size="15" font-weight="700" fill-opacity=".7">#41</text>
+      <rect x="752" y="161" width="62" height="22" rx="11" fill="#34e07a" fill-opacity=".2" stroke="#34e07a" stroke-opacity=".5" stroke-width=".8"/>
+      <text x="783" y="176" font-size="12" font-weight="700" fill="#7dffae" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Added</text>
+      <text x="710" y="226" font-size="17" font-weight="700" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Order 1042</text>
+      <text x="710" y="272" font-size="13" fill-opacity=".62"># 3fa9c1…7e20</text>
+      <text x="710" y="296" font-size="12" fill-opacity=".45" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">alice</text>
+
+      <!-- block 2: the head, confirmed -->
+      <g filter="url(#drop)">
+        <rect x="870" y="140" width="142" height="172" rx="26" fill="url(#blockOk)"/>
+      </g>
+      <rect x="870.5" y="140.5" width="141" height="171" rx="25.5" fill="none" stroke="#34e07a" stroke-opacity=".7" stroke-width="1.4"/>
+      <text x="890" y="176" font-size="15" font-weight="700" fill-opacity=".7">#42</text>
+      <rect x="932" y="161" width="62" height="22" rx="11" fill="#5aa7ff" fill-opacity=".2" stroke="#5aa7ff" stroke-opacity=".55" stroke-width=".8"/>
+      <text x="963" y="176" font-size="12" font-weight="700" fill="#9fcbff" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Modified</text>
+      <text x="890" y="226" font-size="17" font-weight="700" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Order 1042</text>
+      <text x="890" y="272" font-size="13" fill-opacity=".62"># b18d04…c3f1</text>
+      <text x="890" y="296" font-size="12" fill-opacity=".45" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">bob</text>
+      <rect x="918" y="127" width="46" height="18" rx="9" fill="#2fd36a"/>
+      <text x="941" y="140" font-size="10.5" font-weight="800" text-anchor="middle" letter-spacing="1.2" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">HEAD</text>
+
+      <!-- block 3 -->
+      <g filter="url(#drop)">
+        <rect x="1050" y="140" width="142" height="172" rx="26" fill="url(#block)"/>
+      </g>
+      <rect x="1050.5" y="140.5" width="141" height="171" rx="25.5" fill="none" stroke="url(#rim)" stroke-width="1"/>
+      <text x="1070" y="176" font-size="15" font-weight="700" fill-opacity=".7">#43</text>
+      <rect x="1112" y="161" width="62" height="22" rx="11" fill="#ff5a50" fill-opacity=".2" stroke="#ff5a50" stroke-opacity=".5" stroke-width=".8"/>
+      <text x="1143" y="176" font-size="12" font-weight="700" fill="#ff9a94" text-anchor="middle" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Deleted</text>
+      <text x="1070" y="226" font-size="17" font-weight="700" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">Order 1041</text>
+      <text x="1070" y="272" font-size="13" fill-opacity=".62"># 52e7a9…0b6d</text>
+      <text x="1070" y="296" font-size="12" fill-opacity=".45" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif">carol</text>
+    </g>
+
+    <!-- the shield that confirms the chain -->
+    <g>
+      <circle cx="941" cy="92" r="40" fill="#2fd36a" opacity=".45" filter="url(#soft)"/>
+      <circle cx="941" cy="92" r="30" fill="url(#orb)"/>
+      <circle cx="941" cy="92" r="29.4" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="1"/>
+      <path d="M941 77l13 5.2v8.8c0 8.2-5.3 13.7-13 16-7.7-2.3-13-7.8-13-16v-8.8L941 77z" fill="none" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>
+      <path d="M934.6 92.4l4.6 4.6 8.4-8.8" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

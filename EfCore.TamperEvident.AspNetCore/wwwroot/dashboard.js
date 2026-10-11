@@ -382,7 +382,13 @@
         h('div', { class: 'foot' }, userChip(entry.userId), h('span', { text: relTime(entry.timestampUtc) }))));
     });
     host.replaceChildren(entries.length ? chain : h('p', { class: 'muted', text: 'This table has no entries.' }));
+    // Newest entry in view - or the broken one, centered, after a failed verification.
     host.scrollLeft = host.scrollWidth;
+    const brokenBlock = host.querySelector('.block.broken');
+    if (brokenBlock) {
+      const offset = brokenBlock.getBoundingClientRect().left - host.getBoundingClientRect().left;
+      host.scrollLeft += offset - (host.clientWidth - brokenBlock.offsetWidth) / 2;
+    }
     const hint = () => host.classList.toggle('has-more', host.scrollLeft > 4);
     host.onscroll = hint;
     hint();

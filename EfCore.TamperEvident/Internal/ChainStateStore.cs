@@ -14,6 +14,54 @@ namespace EfCore.TamperEvident.Internal
     {
         public const string GenesisHash = "GENESIS";
 
+        // Chain heads that are known to exist, per database and table (a one-time cost per process).
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> EnsuredHeads = new();
+
+        /// <summary>
+        /// Creates the chain heads of the tables that are about to be written, <em>before</em> any transaction starts.
+        /// Each head is created by its own auto-committed statement. That matters on InnoDB (MySQL/MariaDB): two
+        /// transactions that both find the head missing take gap locks and then deadlock on the insert, so the head has
+        /// to exist by the time a transaction locks it. If the head is removed later, <see cref="Lock"/> still recreates it.
+        /// </summary>
+        public static async Task EnsureHeadsAsync(
+            DbContext context, AuditModelInfo info, IEnumerable<string> tables, DateTime utcNow, CancellationToken cancellationToken)
+        {
+            if (info.Commands is not { } commands)
+            {
+                return;
+            }
+
+            foreach (var table in tables)
+            {
+                if (!EnsuredHeads.ContainsKey(HeadKey(context, commands, table)))
+                {
+                    await context.Database.ExecuteSqlRawAsync(
+                        commands.InsertIfMissing, new object[] { table, GenesisHash, 0, utcNow, 0L }, cancellationToken).ConfigureAwait(false);
+                    EnsuredHeads[HeadKey(context, commands, table)] = 0;
+                }
+            }
+        }
+
+        public static void EnsureHeads(DbContext context, AuditModelInfo info, IEnumerable<string> tables, DateTime utcNow)
+        {
+            if (info.Commands is not { } commands)
+            {
+                return;
+            }
+
+            foreach (var table in tables)
+            {
+                if (!EnsuredHeads.ContainsKey(HeadKey(context, commands, table)))
+                {
+                    context.Database.ExecuteSqlRaw(commands.InsertIfMissing, new object[] { table, GenesisHash, 0, utcNow, 0L });
+                    EnsuredHeads[HeadKey(context, commands, table)] = 0;
+                }
+            }
+        }
+
+        private static string HeadKey(DbContext context, AuditSqlCommands commands, string table) =>
+            context.Database.GetConnectionString() + "\u0000" + commands.InsertIfMissing + "\u0000" + table;
+
         public static async Task<AuditChainState> LockAsync(
             DbContext context, AuditModelInfo info, string table, DateTime utcNow, CancellationToken cancellationToken)
         {
