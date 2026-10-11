@@ -5,21 +5,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [2.0.0] - 2026-10-11
 
-2.0 is a **major** release: it fixes several serious defects of 1.x, which required a schema change and a few API changes.
-See [Upgrading from 1.x](README.md#upgrading-from-1x).
+2.0 is a **major** release: it fixes several serious defects of 1.x, which required a schema change and a few API changes,
+and adds GDPR/KVKK redaction, reasons and metadata, incremental and offline verification, a readable history API,
+OpenTelemetry instrumentation, a dashboard and a command line tool. See [Upgrading from 1.x](README.md#upgrading-from-1x).
+
+### Highlights
+
+- **Right to erasure without breaking the chain.** `RedactAuditTrailAsync`, `RedactAuditUserAsync` and `RedactAuditEntriesAsync`
+  replace personal data with keyed digests; the hashes, the chain, its signed head and every anchor stay valid. A sealed
+  `Redacted` entry records who redacted what and why, and verification refuses redactions it does not authorize.
+- **Who, what, when — and why.** `AuditScope.WithReason`, `AuditScope.WithMetadata`, `MetadataProvider`, the W3C trace id, and
+  `UseHttpRequestMetadata` (client IP, user agent, request) are sealed into every entry.
+- **Incremental verification.** `VerifyFromCheckpointAsync` reads only the entries appended since the last successful run; the
+  scheduled verification alternates incremental runs with periodic full ones.
+- **Offline evidence.** `AuditEvidence.VerifyBundleAsync` and the `tamper-evident` .NET tool verify an exported evidence bundle
+  without the database.
+- **History and time travel.** `GetAuditTrailAsync` returns a property-by-property history; `GetStateAsOfAsync` rebuilds a row as it
+  was at any moment.
+- **Faster.** Prepared commands and one round trip less per save (a single-row save is about a third faster and every save
+  allocates about a third less), and verification that hashes on all cores while it reads (about four times faster).
 
 ### Security
 
 - **The user is now part of the sealed record.** Previously `UserId` was not covered by the hash, so the author of a change could be rewritten undetected.
-- **Hash inputs are length-prefixed** (canonical format, `HashVersion = 2`). With plain string concatenation, characters could be moved between neighbouring fields without breaking the hash.
+- **Hash inputs are length-prefixed** (`HashVersion = 3`). With plain string concatenation, characters could be moved between neighbouring fields without breaking the hash. The record id, the user and every value are committed through their own HMAC digest, salted with the entry id, which is what makes redaction possible; the entry id and the metadata are covered too.
 - **Deleting the newest entries is detected.** The head of every chain (`AuditChainStates`) is authenticated with an HMAC and compared with the newest entry during verification; entries behind the head are reported too.
 - **The public default HMAC key was removed.** `HmacSecretKey` is required (16+ characters, 32+ recommended) and is validated at registration time.
 - Entries now carry a **sequence number**; the order no longer depends on clocks, which could produce false alarms with several application servers.
 - A unique index on `(TableName, PreviousHash)` makes a forked chain impossible, even if locking were bypassed.
-- Hash comparisons run in constant time.
+- Hash and MAC comparisons run in constant time on the raw bytes.
+- Webhook anchors are signed as `t=<unix time>,v1=<HMAC>` over the time and the body, so captured requests cannot be replayed;
+  `WebhookAnchorPublisher.VerifySignature` checks authenticity and freshness for receivers.
+- Values that look like redaction markers are refused when an entry is sealed, so a redaction can never be faked through user input.
 
 ### Added
 
+- **Redaction** (`AuditRedactionRequest`, `AuditRedactionResult`, `AuditActions.Redacted`, `AuditFailureKind.UnauthorizedRedaction`).
+- **Metadata**: `AuditLog.Metadata`, `AuditScope.Begin(user, reason)`, `WithReason`, `WithMetadata`, `TamperEvidentOptions.MetadataProvider`,
+  `CaptureTraceId`; `UseHttpRequestMetadata` in the ASP.NET Core package.
+- **Incremental verification**: `AuditCheckpoint`, `VerifyFromCheckpointAsync`, a checkpoint overload of `VerifyAllAsync`,
+  `AuditVerificationResult.Checkpoint`, `AuditFailureKind.CheckpointMismatch`; `Incremental` and `FullVerificationInterval` on the
+  scheduled verification.
+- **History**: `GetAuditTrailAsync`, `GetStateAsOfAsync`, `AuditChange`, `AuditPropertyChange`, `AuditValue`, `AuditSnapshot`.
+- **Evidence bundles, format 2** (signed chain heads, metadata, exact timestamps, consistent snapshots) and `AuditEvidence.VerifyBundleAsync`.
+- **`EfCore.TamperEvident.Cli`**, a .NET tool: `tamper-evident verify | inspect | keygen`.
+- **OpenTelemetry**: `TamperEvidentTelemetry` (`ActivitySource` and `Meter` named `EfCore.TamperEvident`).
+- Dashboard: record history timeline, context and redaction views, incremental and redaction indicators.
+- A BenchmarkDotNet project (SQLite and PostgreSQL).
 - `EfCore.TamperEvident.AspNetCore` package: the **Liquid Glass dashboard** (`MapTamperEvidentDashboard`), scheduled verification (`AddTamperEvidentVerification`), a health check, and HTTP user attribution (`UseHttpContextUser`).
 - Support for the synchronous `SaveChanges()`, `TransactionScope`, and `EnableRetryOnFailure` execution strategies.
 - .NET 8, .NET 9 and .NET 10 targets with EF Core 8, 9 and 10.
@@ -33,7 +65,7 @@ See [Upgrading from 1.x](README.md#upgrading-from-1x).
 - `AuditActions.Restored` detection and `DeletedAt`-style soft deletes.
 - `AuditExporter` (CSV, JSON Lines, evidence bundle) and composable audit queries (`AuditLogs()`, `ForTable`, `ByUser`, `GetAuditHistoryAsync`...).
 - `AddTamperEvident` / `AddTamperEvidentVerifier` dependency injection extensions and typed `UseTamperEvidentAudit` overloads.
-- Provider conformance tests (PostgreSQL, MySQL/MariaDB, SQL Server) and a runnable `samples/QuickStart`.
+- Provider conformance tests (PostgreSQL, MySQL/MariaDB, SQL Server), end-to-end tests of the command line tool, and a runnable `samples/QuickStart`.
 - `README.tr.md` (Turkish), `SECURITY.md`, release and CI workflows.
 
 ### Fixed
@@ -57,11 +89,15 @@ See [Upgrading from 1.x](README.md#upgrading-from-1x).
 
 ### Changed
 
-- `AuditLog` gained `SequenceNumber`, `HashVersion` and `KeyId`; `AuditChainState` gained `LastSequence`, `KeyId` and `Mac`. Column lengths are now bounded and indexes are defined. **A migration is required.**
+- `AuditLog` gained `SequenceNumber`, `HashVersion`, `KeyId` and `Metadata`; `AuditChainState` gained `LastSequence`, `KeyId` and `Mac`. Column lengths are now bounded and indexes are defined. **A migration is required.**
 - `AuditVerifier.VerifyTableIntegrityAsync` returns an `AuditVerificationResult` (it still deconstructs into `(bool, string)`) and accepts any `IEnumerable<string>` of anchors plus a `CancellationToken`.
 - `IAnchorPublisher` has a new `PublishAsync(AuditAnchor)` member; implementations of the old `SendAnchorAsync` keep working through default interface members.
 - `SoftDeleteColumnName` matching is case-insensitive.
-- Hashing uses the one-shot `HMACSHA256.HashData` API; the interceptor is thread-safe and can be shared as a singleton.
+- The interceptor is thread-safe and can be shared as a singleton. The statements of the hot path are prepared once per model,
+  use the column type mappings of the model, and still go through EF Core's logging and command interceptors; new entries and the
+  advanced chain heads are written with one command.
+- Verification hashes batches of entries in parallel while the next batch is read (about four times faster on four cores), and the
+  dashboard overview is computed from the chain heads instead of scanning the trail.
 
 ### Removed
 
