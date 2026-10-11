@@ -1,0 +1,56 @@
+name: Release
+
+# Publishes both packages to NuGet when a version tag (for example v2.0.0) is pushed.
+# Requires the repository secret NUGET_API_KEY.
+on:
+  push:
+    tags: [ "v*" ]
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Check that the tag matches the package version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -n1)"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match <Version>$version</Version> in Directory.Build.props"
+            exit 1
+          fi
+
+      - name: Test
+        run: |
+          dotnet test EfCore.TamperEvident.Tests --configuration Release
+          dotnet test EfCore.TamperEvident.AspNetCore.Tests --configuration Release
+
+      - name: Pack
+        run: |
+          dotnet pack EfCore.TamperEvident/EfCore.TamperEvident.csproj --configuration Release --output artifacts
+          dotnet pack EfCore.TamperEvident.AspNetCore/EfCore.TamperEvident.AspNetCore.csproj --configuration Release --output artifacts
+
+      - name: Push to NuGet
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*

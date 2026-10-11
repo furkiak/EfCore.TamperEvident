@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  # Unit tests (SQLite and the in-memory provider) on every target framework / EF Core version.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test core library (net8.0, net9.0, net10.0)
+        run: dotnet test EfCore.TamperEvident.Tests --no-build --configuration Release --verbosity normal
+
+      - name: Test ASP.NET Core package (net8.0, net9.0, net10.0)
+        run: dotnet test EfCore.TamperEvident.AspNetCore.Tests --no-build --configuration Release --verbosity normal
+
+  # The audit trail against real PostgreSQL, MySQL/MariaDB and SQL Server servers.
+  databases:
+    name: Databases (${{ matrix.mysql.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql:
+          - { name: "MariaDB 10.11", image: "mariadb:10.11", flavor: "mariadb" }
+          - { name: "MySQL 8.4", image: "mysql:8.4", flavor: "mysql" }
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: te-test
+        ports: [ "5432:5432" ]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: ${{ matrix.mysql.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: te-test
+          MARIADB_ROOT_PASSWORD: te-test
+        ports: [ "3306:3306" ]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized || mysqladmin ping -h 127.0.0.1 -uroot -pte-test"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Te-test-Passw0rd!"
+        ports: [ "1433:1433" ]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Te-test-Passw0rd!' -C -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Te-test-Passw0rd!' -Q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    env:
+      TE_TEST_POSTGRES: "Host=127.0.0.1;Port=5432;Username=postgres;Password=te-test"
+      TE_TEST_MYSQL: "Server=127.0.0.1;Port=3306;User=root;Password=te-test"
+      TE_TEST_MYSQL_FLAVOR: ${{ matrix.mysql.flavor }}
+      TE_TEST_SQLSERVER: "Server=127.0.0.1,1433;User Id=sa;Password=Te-test-Passw0rd!;TrustServerCertificate=True;Encrypt=False"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Run the provider conformance tests
+        run: dotnet test EfCore.TamperEvident.IntegrationTests --configuration Release --verbosity normal
+
+  # Builds the NuGet packages so that packaging problems show up in pull requests.
+  pack:
+    name: Pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Pack
+        run: |
+          dotnet pack EfCore.TamperEvident/EfCore.TamperEvident.csproj --configuration Release --output artifacts
+          dotnet pack EfCore.TamperEvident.AspNetCore/EfCore.TamperEvident.AspNetCore.csproj --configuration Release --output artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/*
+          if-no-files-found: error

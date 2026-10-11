@@ -1,0 +1,56 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <NuGetAudit>true</NuGetAudit>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <!-- Logging only happens on rare failure paths; LoggerMessage delegates would add boilerplate without benefit. -->
+    <NoWarn>$(NoWarn);CA1848;CA1873</NoWarn>
+  </PropertyGroup>
+
+  <!-- Package metadata shared by every packable project -->
+  <PropertyGroup>
+    <Version>2.0.0</Version>
+    <Authors>Furkan Akca</Authors>
+    <Copyright>Copyright (c) Furkan Akca</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/furkiak/EfCore.TamperEvident</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/furkiak/EfCore.TamperEvident</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>https://github.com/furkiak/EfCore.TamperEvident/blob/main/CHANGELOG.md</PackageReleaseNotes>
+    <PackageIcon>icon.png</PackageIcon>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!--
+    Minimum EF Core version per target framework for the published packages
+    (consumers always get at least this version), and the newest patch release
+    that the test projects run against.
+  -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <EfCoreMinVersion>8.0.11</EfCoreMinVersion>
+    <EfCoreTestVersion>8.0.31</EfCoreTestVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <EfCoreMinVersion>9.0.0</EfCoreMinVersion>
+    <EfCoreTestVersion>9.0.20</EfCoreTestVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <EfCoreMinVersion>10.0.0</EfCoreMinVersion>
+    <EfCoreTestVersion>10.0.12</EfCoreTestVersion>
+  </PropertyGroup>
+
+</Project>

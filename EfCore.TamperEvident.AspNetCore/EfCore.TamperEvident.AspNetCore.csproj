@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>EfCore.TamperEvident.AspNetCore</RootNamespace>
+    <AssemblyName>EfCore.TamperEvident.AspNetCore</AssemblyName>
+    <PackageId>EfCore.TamperEvident.AspNetCore</PackageId>
+    <Title>ASP.NET Core integration for EfCore.TamperEvident</Title>
+    <Description>A Liquid Glass audit dashboard, scheduled integrity verification, a health check and HTTP user attribution for EfCore.TamperEvident.</Description>
+    <PackageTags>efcore;audit;audit-log;dashboard;aspnetcore;health-check;tamper-evident;compliance</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EfCore.TamperEvident\EfCore.TamperEvident.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot\*" LogicalName="wwwroot/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EfCore.TamperEvident.AspNetCore.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\docs\assets\icon.png" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>
