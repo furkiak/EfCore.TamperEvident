@@ -25,6 +25,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EfCore.TamperEvident.Benchmarks", "benchmarks\EfCore.TamperEvident.Benchmarks\EfCore.TamperEvident.Benchmarks.csproj", "{8D89BE1C-6FAF-4295-A16F-060AB1AACF4C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EfCore.TamperEvident.Cli.Tests", "EfCore.TamperEvident.Cli.Tests\EfCore.TamperEvident.Cli.Tests.csproj", "{9874B72D-7D30-4C89-B443-D9BA1D7A058C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -131,6 +133,18 @@ Global
 		{8D89BE1C-6FAF-4295-A16F-060AB1AACF4C}.Release|x64.Build.0 = Release|Any CPU
 		{8D89BE1C-6FAF-4295-A16F-060AB1AACF4C}.Release|x86.ActiveCfg = Release|Any CPU
 		{8D89BE1C-6FAF-4295-A16F-060AB1AACF4C}.Release|x86.Build.0 = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|x64.Build.0 = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Debug|x86.Build.0 = Debug|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|x64.ActiveCfg = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|x64.Build.0 = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|x86.ActiveCfg = Release|Any CPU
+		{9874B72D-7D30-4C89-B443-D9BA1D7A058C}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

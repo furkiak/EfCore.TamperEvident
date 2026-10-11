@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The tool targets net8.0 and rolls forward; it is tested on the oldest and the newest runtime. -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>EfCore.TamperEvident.Cli.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);CA1707;CA1861;CA2007;CA1822;CA1859</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfCoreTestVersion)" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\tools\EfCore.TamperEvident.Cli\EfCore.TamperEvident.Cli.csproj" />
+    <ProjectReference Include="..\EfCore.TamperEvident\EfCore.TamperEvident.csproj" />
+  </ItemGroup>
+
+</Project>

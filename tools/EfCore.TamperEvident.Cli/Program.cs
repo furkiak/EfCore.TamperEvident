@@ -26,7 +26,15 @@ namespace EfCore.TamperEvident.Cli
 
         public static async Task<int> Main(string[] args)
         {
-            Console.OutputEncoding = Encoding.UTF8;
+            try
+            {
+                Console.OutputEncoding = Encoding.UTF8;
+            }
+            catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or PlatformNotSupportedException)
+            {
+                // No console is attached (a service, a detached process): the output encoding cannot be changed.
+            }
+
             try
             {
                 return args switch
