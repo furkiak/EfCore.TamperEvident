@@ -151,38 +151,39 @@ namespace EfCore.TamperEvident.Tests
             await using var db = new TestDbContext(new DbContextOptionsBuilder<TestDbContext>().UseSqlite(connection).Options);
 
             var sqlServer = Internal.AuditSqlCommands.Build(db, DatabaseProvider.SqlServer);
-            Assert.Contains("WITH (UPDLOCK, ROWLOCK)", sqlServer.SelectForUpdate);
+            Assert.Contains("WITH (UPDLOCK, ROWLOCK)", sqlServer.SelectHeadForUpdate);
             Assert.Contains("WHERE NOT EXISTS", sqlServer.InsertIfMissing);
             Assert.Contains("HOLDLOCK", sqlServer.InsertIfMissing);
             Assert.Contains("BEGIN TRY", sqlServer.InsertIfMissing);
 
             var postgres = Internal.AuditSqlCommands.Build(db, DatabaseProvider.PostgreSql);
-            Assert.EndsWith("FOR UPDATE", postgres.SelectForUpdate);
+            Assert.EndsWith("FOR UPDATE", postgres.SelectHeadForUpdate);
             Assert.Contains("ON CONFLICT", postgres.InsertIfMissing);
             Assert.Contains("DO NOTHING", postgres.InsertIfMissing);
 
             var mysql = Internal.AuditSqlCommands.Build(db, DatabaseProvider.MySql);
-            Assert.EndsWith("FOR UPDATE", mysql.SelectForUpdate);
+            Assert.EndsWith("FOR UPDATE", mysql.SelectHeadForUpdate);
             Assert.StartsWith("INSERT IGNORE", mysql.InsertIfMissing);
 
             var sqlite = Internal.AuditSqlCommands.Build(db, DatabaseProvider.Sqlite);
             Assert.StartsWith("INSERT OR IGNORE", sqlite.InsertIfMissing);
-            Assert.DoesNotContain("FOR UPDATE", sqlite.SelectForUpdate);
+            Assert.DoesNotContain("FOR UPDATE", sqlite.SelectHeadForUpdate);
 
             foreach (var commands in new[] { sqlServer, postgres, mysql, sqlite })
             {
                 // Everything is parameterized: the table name is only ever passed as a value.
-                Assert.Contains("= {0}", commands.SelectForUpdate);
+                Assert.Contains("= {0}", commands.SelectHeadForUpdate);
                 Assert.Contains("WHERE", commands.UpdateChainState);
                 Assert.Contains("{6}", commands.UpdateChainState);
-                Assert.Contains("{" + (3 * Internal.AuditSqlCommands.LogColumnCount + 12) + "}", commands.InsertLogs(4));
-                Assert.DoesNotContain("{" + (4 * Internal.AuditSqlCommands.LogColumnCount) + "}", commands.InsertLogs(4));
+                Assert.EndsWith(") VALUES ", commands.InsertLogsPrefix);
+                Assert.Contains("{5}", commands.UpdateRedacted);
             }
 
             // Identifiers are delimited by the SQL generation helper of the context's own provider (here: SQLite).
-            Assert.Contains("\"AuditChainStates\"", postgres.SelectForUpdate);
-            Assert.Contains("\"AuditLogs\"", postgres.InsertLogs(1));
-            Assert.Contains("\"TableName\" = {0}", postgres.SelectForUpdate);
+            Assert.Contains("\"AuditChainStates\"", postgres.SelectHeadForUpdate);
+            Assert.Contains("\"AuditLogs\"", postgres.InsertLogsPrefix);
+            Assert.Contains("\"Metadata\"", postgres.InsertLogsPrefix);
+            Assert.Contains("\"TableName\" = {0}", postgres.SelectHeadForUpdate);
         }
 
         [Fact]
@@ -193,9 +194,9 @@ namespace EfCore.TamperEvident.Tests
             await using var db = new SchemaDbContext(new DbContextOptionsBuilder<SchemaDbContext>().UseSqlite(connection).Options);
 
             var postgres = Internal.AuditSqlCommands.Build(db, DatabaseProvider.PostgreSql);
-            Assert.Contains("FROM \"chain_heads\"", postgres.SelectForUpdate);
+            Assert.Contains("FROM \"chain_heads\"", postgres.SelectHeadForUpdate);
             Assert.Contains("UPDATE \"chain_heads\"", postgres.UpdateChainState);
-            Assert.Contains("INSERT INTO \"audit_trail\"", postgres.InsertLogs(1));
+            Assert.Contains("INSERT INTO \"audit_trail\"", postgres.InsertLogsPrefix);
         }
 
         private sealed class SchemaDbContext : DbContext

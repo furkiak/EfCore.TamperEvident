@@ -114,11 +114,53 @@ namespace EfCore.TamperEvident.Services
 
             query = query.OrderBy(x => x.SequenceNumber).ThenBy(x => x.TimestampTicks);
 
-            await foreach (var log in query.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
+            // Entries are read in batches. Recomputing the hashes is the expensive part, and every entry can be checked on
+            // its own: while the next batch is read, the previous one is hashed on all cores. The links between the entries
+            // are then checked in chain order.
+            using (var hashing = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                if (validator.Accept(log) is { } failure)
+                var batch = new List<AuditLog>(BatchSize);
+                (List<AuditLog> Batch, Task<EntryCheck[]> Checks)? pending = null;
+                try
                 {
-                    return Result(failure);
+                    await foreach (var log in query.AsAsyncEnumerable().WithCancellation(cancellationToken).ConfigureAwait(false))
+                    {
+                        batch.Add(log);
+                        if (batch.Count < BatchSize)
+                        {
+                            continue;
+                        }
+
+                        if (pending is { } previous && Link(validator, previous.Batch, await previous.Checks.ConfigureAwait(false)) is { } failure)
+                        {
+                            return Result(failure);
+                        }
+
+                        var full = batch;
+                        pending = (full, Task.Run(() => HashAll(full, hashing.Token), hashing.Token));
+                        batch = new List<AuditLog>(BatchSize);
+                    }
+
+                    if (pending is { } last && Link(validator, last.Batch, await last.Checks.ConfigureAwait(false)) is { } lastFailure)
+                    {
+                        return Result(lastFailure);
+                    }
+
+                    pending = null;
+                    if (Link(validator, batch, HashAll(batch, cancellationToken)) is { } rest)
+                    {
+                        return Result(rest);
+                    }
+                }
+                finally
+                {
+                    // A failure found early leaves the batch that is being hashed behind: stop it.
+                    hashing.Cancel();
+                    if (pending is { } abandoned)
+                    {
+                        await abandoned.Checks.ContinueWith(static _ => { }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default)
+                            .ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -143,6 +185,40 @@ namespace EfCore.TamperEvident.Services
             }
 
             return Result(null);
+        }
+
+        private const int BatchSize = 512;
+
+        private EntryCheck[] HashAll(List<AuditLog> batch, CancellationToken cancellationToken)
+        {
+            var checks = new EntryCheck[batch.Count];
+            if (batch.Count >= 64 && Environment.ProcessorCount > 1)
+            {
+                Parallel.For(0, batch.Count, new ParallelOptions { CancellationToken = cancellationToken },
+                    i => checks[i] = ChainValidator.Check(_keys, batch[i]));
+            }
+            else
+            {
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    checks[i] = ChainValidator.Check(_keys, batch[i]);
+                }
+            }
+
+            return checks;
+        }
+
+        private static ChainFailure? Link(ChainValidator validator, List<AuditLog> batch, EntryCheck[] checks)
+        {
+            for (var i = 0; i < batch.Count; i++)
+            {
+                if (validator.Accept(batch[i], checks[i]) is { } failure)
+                {
+                    return failure;
+                }
+            }
+
+            return null;
         }
 
         private static string SuccessMessage(ChainValidator validator)

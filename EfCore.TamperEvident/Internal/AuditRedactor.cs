@@ -159,7 +159,7 @@ namespace EfCore.TamperEvident.Internal
                             }!, cancellationToken).ConfigureAwait(false);
                         }
 
-                        await AuditWriter.WriteAsync(_context, commands, new[] { authorization }, new[] { chain }, cancellationToken).ConfigureAwait(false);
+                        await AuditWriter.WriteAsync(_context, _info, new[] { authorization }, new[] { chain }, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {

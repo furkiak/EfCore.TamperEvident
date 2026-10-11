@@ -7,6 +7,12 @@ namespace EfCore.TamperEvident.Internal
     /// <summary>A verification failure, attributed to an entry when possible.</summary>
     internal readonly record struct ChainFailure(AuditFailureKind Kind, string Message, Guid? EntryId = null, long? Sequence = null);
 
+    /// <summary>The outcome of recomputing the hash of one entry.</summary>
+    /// <param name="UnknownKey">No configured key has the entry's key id.</param>
+    /// <param name="Authentic">The entry matches its hash.</param>
+    /// <param name="Redacted">The redacted fields of the entry, or <c>null</c>.</param>
+    internal readonly record struct EntryCheck(bool UnknownKey, bool Authentic, string[]? Redacted);
+
     /// <summary>
     /// Checks the entries of one chain in order, wherever they come from (the database or an evidence bundle):
     /// the link to the predecessor, the sequence, the keyed hash, redactions and anchors, and finally the chain head.
@@ -15,7 +21,6 @@ namespace EfCore.TamperEvident.Internal
     {
         private readonly AuditKeyRing _keys;
         private readonly HashSet<string>? _anchors;
-        private readonly List<string> _redactedFields = new();
         private readonly Dictionary<Guid, (long Sequence, HashSet<string> Fields)> _pendingRedactions = new();
         private string _expectedPreviousHash;
 
@@ -61,8 +66,36 @@ namespace EfCore.TamperEvident.Internal
             }
         }
 
+        /// <summary>
+        /// Recomputes the hash of an entry. It does not depend on the other entries, so it may run on any thread and in
+        /// any order; <see cref="Accept(AuditLog, EntryCheck)"/> then checks the links in chain order.
+        /// </summary>
+        public static EntryCheck Check(AuditKeyRing keys, AuditLog log)
+        {
+            var candidates = keys.Candidates(log.KeyId);
+            if (candidates.Count == 0)
+            {
+                return new EntryCheck(UnknownKey: true, Authentic: false, null);
+            }
+
+            List<string>? redacted = null;
+            foreach (var key in candidates)
+            {
+                redacted?.Clear();
+                if (AuditHasher.Verify(key, log, redacted ??= new List<string>()))
+                {
+                    return new EntryCheck(false, true, redacted.Count == 0 ? null : redacted.ToArray());
+                }
+            }
+
+            return new EntryCheck(false, false, null);
+        }
+
         /// <summary>Checks the next entry of the chain.</summary>
-        public ChainFailure? Accept(AuditLog log)
+        public ChainFailure? Accept(AuditLog log) => Accept(log, Check(_keys, log));
+
+        /// <summary>Checks the next entry of the chain, whose hash was already checked with <see cref="Check"/>.</summary>
+        public ChainFailure? Accept(AuditLog log, EntryCheck check)
         {
             RecordsChecked++;
             var at = (Guid?)log.Id;
@@ -90,34 +123,22 @@ namespace EfCore.TamperEvident.Internal
                     $"DATA MANIPULATION DETECTED! Record ID: {log.Id} has an unexpected hash version ({log.HashVersion}).", at, log.SequenceNumber);
             }
 
-            var candidates = _keys.Candidates(log.KeyId);
-            if (candidates.Count == 0)
+            if (check.UnknownKey)
             {
                 return new(AuditFailureKind.UnknownKey,
                     $"UNKNOWN KEY! Record ID: {log.Id} was sealed with key '{log.KeyId}', which is not configured.", at, log.SequenceNumber);
             }
 
-            _redactedFields.Clear();
-            var authentic = false;
-            foreach (var key in candidates)
-            {
-                if (AuditHasher.Verify(key, log, _redactedFields))
-                {
-                    authentic = true;
-                    break;
-                }
-            }
-
-            if (!authentic)
+            if (!check.Authentic)
             {
                 return new(AuditFailureKind.DataManipulated,
                     $"DATA MANIPULATION DETECTED! The payload of record ID: {log.Id} has been externally modified.", at, log.SequenceNumber);
             }
 
-            if (_redactedFields.Count > 0)
+            if (check.Redacted is { } redacted)
             {
                 RedactedRecords++;
-                _pendingRedactions[log.Id] = (log.SequenceNumber, new HashSet<string>(_redactedFields, StringComparer.Ordinal));
+                _pendingRedactions[log.Id] = (log.SequenceNumber, new HashSet<string>(redacted, StringComparer.Ordinal));
             }
 
             if (log.HashVersion == AuditHashVersion.Redactable

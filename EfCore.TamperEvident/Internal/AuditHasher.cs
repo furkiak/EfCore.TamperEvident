@@ -151,7 +151,7 @@ namespace EfCore.TamperEvident.Internal
             WriteString(buffer, log.KeyId);
             WriteInt64(buffer, log.SequenceNumber);
             WriteInt64(buffer, log.TimestampTicks);
-            HMACSHA256.HashData(key, buffer.WrittenSpan, hash);
+            Hmac(key, buffer.WrittenSpan, hash);
             return Outcome.Ok;
         }
 
@@ -191,7 +191,7 @@ namespace EfCore.TamperEvident.Internal
                 }
             }
 
-            HMACSHA256.HashData(key.Secret, buffer.WrittenSpan, hash);
+            Hmac(key.Secret, buffer.WrittenSpan, hash);
             return Outcome.Ok;
         }
 
@@ -377,7 +377,7 @@ namespace EfCore.TamperEvident.Internal
                 BinaryPrimitives.WriteInt32BigEndian(input[16..], tag.Length);
                 tag.CopyTo(input[20..]);
                 value.CopyTo(input[(20 + tag.Length)..]);
-                HMACSHA256.HashData(key.FieldKey, input[..size], digest);
+                Hmac(key.FieldKey, input[..size], digest);
             }
             finally
             {
@@ -535,7 +535,7 @@ namespace EfCore.TamperEvident.Internal
             WriteString(buffer, lastHash);
             WriteString(buffer, keyId);
             WriteInt64(buffer, lastSequence);
-            HMACSHA256.HashData(key.Secret, buffer.WrittenSpan, mac);
+            Hmac(key.Secret, buffer.WrittenSpan, mac);
         }
 
         /// <summary>A short keyed fingerprint that replaces a masked value.</summary>
@@ -553,7 +553,7 @@ namespace EfCore.TamperEvident.Internal
             WriteString(buffer, propertyName);
             WriteString(buffer, text);
             Span<byte> mac = stackalloc byte[HashSize];
-            HMACSHA256.HashData(key.Secret, buffer.WrittenSpan, mac);
+            Hmac(key.Secret, buffer.WrittenSpan, mac);
             return "[MASKED:" + Hex.ToLower(mac[..4]) + "]";
         }
 
@@ -568,6 +568,44 @@ namespace EfCore.TamperEvident.Internal
             return CryptographicOperations.FixedTimeEquals(
                 System.Runtime.InteropServices.MemoryMarshal.AsBytes(left.AsSpan()),
                 System.Runtime.InteropServices.MemoryMarshal.AsBytes(right.AsSpan()));
+        }
+
+        #endregion
+
+        #region HMAC
+
+        // Keyed HMAC instances are reused per thread: setting up the key costs as much as hashing a short field, and an
+        // audited save hashes a dozen fields per entry. A few slots cover the current and the field key of a key ring.
+        [ThreadStatic]
+        private static (byte[]? Key, IncrementalHash? Hmac)[]? _hmacs;
+
+        [ThreadStatic]
+        private static int _nextSlot;
+
+        private static void Hmac(byte[] key, ReadOnlySpan<byte> data, Span<byte> destination)
+        {
+            var slots = _hmacs ??= new (byte[]?, IncrementalHash?)[4];
+            IncrementalHash? hmac = null;
+            foreach (var (slotKey, slotHmac) in slots)
+            {
+                if (ReferenceEquals(slotKey, key))
+                {
+                    hmac = slotHmac;
+                    break;
+                }
+            }
+
+            if (hmac is null)
+            {
+                var slot = _nextSlot;
+                _nextSlot = (slot + 1) % slots.Length;
+                slots[slot].Hmac?.Dispose();
+                hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, key);
+                slots[slot] = (key, hmac);
+            }
+
+            hmac.AppendData(data);
+            hmac.TryGetHashAndReset(destination, out _);
         }
 
         #endregion

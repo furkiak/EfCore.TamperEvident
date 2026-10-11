@@ -337,9 +337,9 @@ namespace EfCore.TamperEvident.Interceptors
 
                 var batch = Seal(session, chains, now);
 
-                if (session.Info.Commands is { } commands)
+                if (session.Info.IsRelational)
                 {
-                    AuditWriter.Write(context, commands, batch.Logs, chains.Values.ToList());
+                    AuditWriter.Write(context, session.Info, batch.Logs, chains.Values.ToList());
                 }
                 else
                 {
@@ -388,9 +388,9 @@ namespace EfCore.TamperEvident.Interceptors
 
                 var batch = Seal(session, chains, now);
 
-                if (session.Info.Commands is { } commands)
+                if (session.Info.IsRelational)
                 {
-                    await AuditWriter.WriteAsync(context, commands, batch.Logs, chains.Values.ToList(), cancellationToken).ConfigureAwait(false);
+                    await AuditWriter.WriteAsync(context, session.Info, batch.Logs, chains.Values.ToList(), cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
