@@ -1,3 +1,4 @@
+using EfCore.TamperEvident.Diagnostics;
 using EfCore.TamperEvident.Interceptors;
 using EfCore.TamperEvident.Models;
 using EfCore.TamperEvident.Services;
@@ -17,6 +18,16 @@ namespace EfCore.TamperEvident.Internal
             DbContext context, IQueryable<AuditLog> selection, AuditRedactionRequest request, CancellationToken cancellationToken)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(request.Reason, nameof(request));
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Redact);
+            var result = await RedactCoreAsync(context, selection, request, cancellationToken).ConfigureAwait(false);
+            activity?.SetTag(TamperEvidentTelemetry.Tags.Entries, result.EntriesRedacted);
+            TamperEvidentTelemetry.ValuesRedacted.Add(result.ValuesRedacted);
+            return result;
+        }
+
+        private static async Task<AuditRedactionResult> RedactCoreAsync(
+            DbContext context, IQueryable<AuditLog> selection, AuditRedactionRequest request, CancellationToken cancellationToken)
+        {
 
             var interceptor = FindInterceptor(context);
             var info = AuditModelInfo.Resolve(context, interceptor.Options);

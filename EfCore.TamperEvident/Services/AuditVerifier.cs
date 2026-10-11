@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Diagnostics;
 using EfCore.TamperEvident.Internal;
 using EfCore.TamperEvident.Models;
 using Microsoft.EntityFrameworkCore;
@@ -71,8 +72,11 @@ namespace EfCore.TamperEvident.Services
         {
             var stopwatch = Stopwatch.StartNew();
             var validator = new ChainValidator(tableName, _keys, checkpoint, anchors);
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Verify);
+            activity?.SetTag(TamperEvidentTelemetry.Tags.Table, tableName);
+            activity?.SetTag(TamperEvidentTelemetry.Tags.Incremental, checkpoint is not null);
 
-            AuditVerificationResult Result(ChainFailure? failure) => new()
+            AuditVerificationResult Result(ChainFailure? failure) => Observe(activity, new AuditVerificationResult
             {
                 IsValid = failure is null,
                 Failure = failure?.Kind ?? AuditFailureKind.None,
@@ -87,7 +91,7 @@ namespace EfCore.TamperEvident.Services
                 HeadSequence = validator.Sequence,
                 StartedAfter = checkpoint,
                 Duration = stopwatch.Elapsed
-            };
+            });
 
             // The head is read first. Entries that are appended while the verification runs lie behind it and are
             // left for the next run, which keeps the check consistent on a busy system.
@@ -188,6 +192,27 @@ namespace EfCore.TamperEvident.Services
         }
 
         private const int BatchSize = 512;
+
+        private static AuditVerificationResult Observe(Activity? activity, AuditVerificationResult result)
+        {
+            var outcome = result.IsValid ? "valid" : result.Failure.ToString();
+            if (activity is not null)
+            {
+                activity.SetTag(TamperEvidentTelemetry.Tags.Entries, result.RecordsChecked);
+                activity.SetTag(TamperEvidentTelemetry.Tags.Result, outcome);
+                if (!result.IsValid)
+                {
+                    activity.SetStatus(ActivityStatusCode.Error, result.Message);
+                }
+            }
+
+            var table = new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Table, result.TableName);
+            TamperEvidentTelemetry.Verifications.Add(1, table, new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Result, outcome));
+            TamperEvidentTelemetry.EntriesVerified.Add(result.RecordsChecked, table);
+            TamperEvidentTelemetry.VerificationDuration.Record(result.Duration.TotalSeconds, table,
+                new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Incremental, result.IsIncremental));
+            return result;
+        }
 
         private EntryCheck[] HashAll(List<AuditLog> batch, CancellationToken cancellationToken)
         {

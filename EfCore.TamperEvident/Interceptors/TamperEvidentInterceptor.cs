@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Diagnostics;
 using EfCore.TamperEvident.Internal;
 using EfCore.TamperEvident.Models;
 using Microsoft.EntityFrameworkCore;
@@ -326,6 +327,8 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             session.IsWritingAudit = true;
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Seal);
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 var now = _options.TimeProvider.GetUtcNow();
@@ -354,10 +357,12 @@ namespace EfCore.TamperEvident.Interceptors
                 }
 
                 _sessions.Remove(context);
+                Record(activity, batch.Logs, started);
                 ScheduleAnchors(context, session, batch.Anchors).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 Abort(context, session);
                 throw Wrap(ex);
             }
@@ -376,6 +381,8 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             session.IsWritingAudit = true;
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Seal);
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 var now = _options.TimeProvider.GetUtcNow();
@@ -414,15 +421,47 @@ namespace EfCore.TamperEvident.Interceptors
                 }
 
                 _sessions.Remove(context);
+                Record(activity, batch.Logs, started);
                 await ScheduleAnchors(context, session, batch.Anchors, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 await AbortAsync(context, session).ConfigureAwait(false);
                 throw Wrap(ex);
             }
 
             return result;
+        }
+
+        private static void Record(Activity? activity, List<AuditLog> logs, long started)
+        {
+            if (activity is not null)
+            {
+                activity.SetTag(TamperEvidentTelemetry.Tags.Entries, logs.Count);
+                activity.SetTag(TamperEvidentTelemetry.Tags.Table, string.Join(",", logs.Select(l => l.TableName).Distinct(StringComparer.Ordinal)));
+            }
+
+            if (TamperEvidentTelemetry.SealDuration.Enabled)
+            {
+                TamperEvidentTelemetry.SealDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+            }
+
+            if (TamperEvidentTelemetry.EntriesSealed.Enabled)
+            {
+                // The entries are grouped by table.
+                for (var start = 0; start < logs.Count;)
+                {
+                    var end = start;
+                    while (end < logs.Count && string.Equals(logs[end].TableName, logs[start].TableName, StringComparison.Ordinal))
+                    {
+                        end++;
+                    }
+
+                    TamperEvidentTelemetry.EntriesSealed.Add(end - start, new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Table, logs[start].TableName));
+                    start = end;
+                }
+            }
         }
 
         // Cancellation is passed through; everything else becomes a non-transient AuditTrailException.
