@@ -25,7 +25,7 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -90,7 +90,7 @@ jobs:
       TE_TEST_MYSQL_FLAVOR: ${{ matrix.mysql.flavor }}
       TE_TEST_SQLSERVER: "Server=127.0.0.1,1433;User Id=sa;Password=Te-test-Passw0rd!;TrustServerCertificate=True;Encrypt=False"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -107,7 +107,7 @@ jobs:
     name: Pack
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
