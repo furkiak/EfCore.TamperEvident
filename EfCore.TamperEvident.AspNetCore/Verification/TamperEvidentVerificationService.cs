@@ -48,12 +48,28 @@ namespace EfCore.TamperEvident.AspNetCore
                 anchors = await provider(scope.ServiceProvider, cancellationToken).ConfigureAwait(false);
             }
 
-            var report = await verifier.VerifyAllAsync(anchors, cancellationToken).ConfigureAwait(false);
+            var checkpoints = _state.Checkpoints;
+            var lastFull = _state.LastFullVerificationUtc;
+            var full = !_options.Incremental
+                || checkpoints is null
+                || lastFull is null
+                || DateTimeOffset.UtcNow - lastFull.Value >= _options.FullVerificationInterval;
+
+            var report = await verifier.VerifyAllAsync(anchors, full ? null : checkpoints, cancellationToken).ConfigureAwait(false);
             _state.Update(report, "background");
+            if (full)
+            {
+                _state.RecordFullVerification(report);
+            }
+            else
+            {
+                _state.RecordIncrementalVerification(report);
+            }
 
             if (report.IsValid)
             {
-                _logger.LogInformation("Audit trail verified: {Message} ({Records} entries).", report.Message, report.RecordsChecked);
+                _logger.LogInformation("Audit trail verified ({Kind}): {Message} ({Records} entries).",
+                    full ? "full" : "new entries", report.Message, report.RecordsChecked);
             }
             else
             {

@@ -85,7 +85,16 @@
     return h('span', { class: 'avatar', style: { '--h1': c1, '--h2': c2 }, 'aria-hidden': 'true' }, (user || '?').trim().charAt(0) || '?');
   }
 
-  const userChip = (user) => h('span', { class: 'user' }, avatar(user), h('span', { text: user }));
+  const TEXT_MARKER = /^\[REDACTED:[0-9a-f]{64}\]$/;
+  const isTextMarker = (value) => typeof value === 'string' && TEXT_MARKER.test(value);
+  const isJsonMarker = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1 && typeof value.$redacted === 'string';
+  const redactedTag = (title) => h('span', { class: 'redacted-value', title: title || 'Redacted: only a keyed digest of the value is kept, the chain stays verifiable' }, icon('eraser', 'ic-s'), 'redacted');
+
+  const userChip = (user) => isTextMarker(user)
+    ? h('span', { class: 'user' }, h('span', { class: 'avatar ghost', 'aria-hidden': 'true' }, '?'), redactedTag('The user was redacted'))
+    : h('span', { class: 'user' }, avatar(user), h('span', { text: user }));
+  const recordText = (recordId) => (isTextMarker(recordId) ? 'redacted record' : recordId);
   const actionClass = (action) => String(action).toLowerCase();
   const actionPill = (action) => h('span', { class: 'pill ' + actionClass(action), text: action });
 
@@ -149,7 +158,8 @@
     ['Modified', 'modified', 'var(--blue)'],
     ['Deleted', 'deleted', 'var(--red)'],
     ['SoftDelete', 'softDelete', 'var(--orange)'],
-    ['Restored', 'restored', 'var(--teal)']
+    ['Restored', 'restored', 'var(--teal)'],
+    ['Redacted', 'redacted', 'var(--purple)']
   ];
 
   async function loadOverview() {
@@ -195,6 +205,8 @@
       case 'ChainStateMissing': return `The chain head of ${where} was deleted while its entries still exist.`;
       case 'UnknownKey': return `${entry ? entry[0].toUpperCase() + entry.slice(1) : 'An entry'} was sealed with a key that is not configured.`;
       case 'AnchorMismatch': return 'An anchor that was stored outside the database does not occur in the chain: the history was rewritten.';
+      case 'CheckpointMismatch': return `An entry of ${where} that an earlier verification vouched for was changed or removed since.`;
+      case 'UnauthorizedRedaction': return `${entry ? entry[0].toUpperCase() + entry.slice(1) : 'An entry of ' + where} has redacted values that no sealed redaction entry authorizes.`;
       default: return result.message;
     }
   }
@@ -266,7 +278,7 @@
       h('div', { class: 'grid cols-4' },
         statTile('Audited tables', number.format(overview.totals.tables), 'grid', 'var(--blue)', 'with a hash chain each'),
         statTile('Entries', number.format(overview.totals.records), 'list', 'var(--indigo)', 'sealed with HMAC-SHA256'),
-        statTile('Users', number.format(overview.totals.users), 'user', 'var(--teal)', 'attributed changes'),
+        statTile('Active users', number.format(overview.totals.users), 'user', 'var(--teal)', `in the last ${overview.totals.userDays || 30} days`),
         statTile('Last entry', lastEntry ? relTime(lastEntry) : '—', 'clock', 'var(--orange)', lastEntry ? dateTime.format(new Date(lastEntry)) : 'nothing audited yet')),
       h('div', { class: 'grid split' }, chainCard(), activityCard(activity)),
       tables.length ? h('div', { class: 'grid cols-3' }, tables.map(tableCard)) : emptyCard());
@@ -293,7 +305,9 @@
       kind = 'run'; title = 'Verifying…'; text = 'Recomputing every hash with the secret key and following the chain.'; iconName = 'refresh';
     } else if (verification && verification.isValid) {
       kind = 'ok'; title = 'Audit trail intact'; iconName = 'shield-check';
-      text = `${plural(verification.recordsChecked, 'entry', 'entries')} across ${plural(verification.tables.length, 'table', 'tables')} verified ${relTime(verification.completedUtc)}. No entry was changed, removed or inserted.`;
+      text = verification.incremental
+        ? `${plural(verification.recordsChecked, 'new entry', 'new entries')} across ${plural(verification.tables.length, 'table', 'tables')} verified ${relTime(verification.completedUtc)}, continuing the chains of the last full check${state.overview.lastFullVerificationUtc ? ' (' + relTime(state.overview.lastFullVerificationUtc) + ')' : ''}.`
+        : `${plural(verification.recordsChecked, 'entry', 'entries')} across ${plural(verification.tables.length, 'table', 'tables')} verified ${relTime(verification.completedUtc)}. No entry was changed, removed or inserted.`;
     } else if (verification) {
       kind = 'bad'; title = 'Tampering suspected'; iconName = 'shield-alert';
       const failed = verification.tables.find((t) => !t.isValid);
@@ -303,6 +317,9 @@
     const meta = [];
     if (verification && !state.verifying) {
       meta.push(h('span', { class: 'pill idle' }, icon('clock', 'ic-s'), verification.source === 'background' ? 'Scheduled check' : 'Manual check'));
+      if (verification.incremental) meta.push(h('span', { class: 'pill accent' }, icon('history', 'ic-s'), 'Incremental'));
+      const redacted = verification.tables.reduce((sum, t) => sum + (t.redactedRecords || 0), 0);
+      if (redacted) meta.push(h('span', { class: 'pill redacted' }, icon('eraser', 'ic-s'), `${plural(redacted, 'entry', 'entries')} with authorized redactions`));
       for (const failed of verification.tables.filter((t) => !t.isValid)) {
         meta.push(h('span', { class: 'pill bad', text: failed.table ? `${failed.table}: ${failed.failure}` : failed.failure }));
       }
@@ -377,7 +394,7 @@
       },
         isHead ? h('span', { class: 'head-badge', text: 'HEAD' }) : null,
         h('div', { class: 'top' }, h('span', { class: 'seq', text: '#' + entry.sequence }), actionPill(entry.action)),
-        h('div', { class: 'rec', text: entry.recordId, title: entry.recordId }),
+        h('div', { class: 'rec', text: recordText(entry.recordId), title: entry.recordId }),
         h('div', { class: 'hash mono' }, icon('hash'), h('span', { text: shortHash(entry.currentHash) })),
         h('div', { class: 'foot' }, userChip(entry.userId), h('span', { text: relTime(entry.timestampUtc) }))));
     });
@@ -498,8 +515,9 @@
     select.addEventListener('change', applyFilters);
 
     const results = h('section', { class: 'glass card', id: 'trail-results', 'aria-label': 'Entries', style: { padding: '8px 6px 18px' } });
-    view.replaceChildren(filters, results);
-    await loadTrail();
+    const timeline = t.table && t.recordId ? h('section', { class: 'glass card', id: 'timeline', 'aria-label': 'Record history' }, skeletonBlock(120)) : null;
+    view.replaceChildren(filters, timeline, results);
+    await Promise.all([loadTrail(), timeline ? loadTimeline(timeline, t.table, t.recordId) : null]);
   }
 
   function debounced(fn, ms) {
@@ -569,7 +587,7 @@
     const rows = data.items.map((entry) => h('button', { class: 'row-item', type: 'button', onclick: () => openDrawer(entry), title: 'Open entry' },
       h('span', { class: 'cell c-when when' }, relTime(entry.timestampUtc), h('small', { text: dateTime.format(new Date(entry.timestampUtc)) })),
       h('span', { class: 'cell c-table', text: entry.table }),
-      h('span', { class: 'cell c-rec', text: entry.recordId }),
+      h('span', { class: 'cell c-rec', text: recordText(entry.recordId) }),
       h('span', { class: 'cell c-act' }, actionPill(entry.action)),
       h('span', { class: 'cell c-user' }, userChip(entry.userId)),
       h('span', { class: 'cell c-seq seq', text: '#' + entry.sequence }),
@@ -586,11 +604,62 @@
         h('span', { text: 'User' }), h('span', { class: 'c-seq', text: 'Seq' }), h('span', { class: 'c-hash', text: 'Hash' })),
       h('div', { class: 'list', role: 'list' }, rows),
       h('div', { class: 'pager' },
-        h('span', { text: `Showing ${number.format(first)}–${number.format(last)} of ${number.format(data.total)}` }),
+        h('span', { text: `Showing ${number.format(first)}–${number.format(last)} of ${data.totalIsEstimate ? 'about ' : ''}${number.format(data.total)}` }),
         h('div', { class: 'btns' },
           h('button', { class: 'btn small', type: 'button', disabled: data.page <= 1, onclick: () => go(data.page - 1) }, icon('chev-left'), h('span', { text: 'Newer' })),
           h('span', { class: 'muted', style: { alignSelf: 'center' }, text: `${data.page} / ${pages}` }),
           h('button', { class: 'btn small', type: 'button', disabled: data.page >= pages, onclick: () => go(data.page + 1) }, h('span', { text: 'Older' }), icon('chev-right')))));
+  }
+
+  // ----------------------------------------------------------------- timeline
+  /** The life of one record: who changed what, when and why, oldest first. */
+  async function loadTimeline(host, table, recordId) {
+    const q = new URLSearchParams({ table, recordId, order: 'asc', pageSize: '200' });
+    const data = await api('logs?' + q);
+    const items = data.items;
+    const head = h('div', { class: 'card-head' },
+      h('h2', null, icon('history'), 'History of ', h('span', { class: 'mono', text: `${table} · ${recordText(recordId)}` })),
+      h('span', { class: 'card-sub', text: plural(data.total, 'change', 'changes') }));
+    if (!items.length) {
+      host.replaceChildren(head, h('p', { class: 'muted', text: 'No audit entries for this record.' }));
+      return;
+    }
+
+    const list = h('ol', { class: 'timeline' }, items.map((entry, index) => {
+      const metadata = parseJson(entry.metadata) || {};
+      const changes = summarizeChanges(entry);
+      return h('li', { class: 'tl-item ' + actionClass(entry.action), style: { '--i': index } },
+        h('span', { class: 'tl-dot', 'aria-hidden': 'true' }),
+        h('div', { class: 'tl-body' },
+          h('div', { class: 'tl-head' },
+            actionPill(entry.action),
+            userChip(entry.userId),
+            h('span', { class: 'faint', text: dateTime.format(new Date(entry.timestampUtc)) }),
+            h('button', { class: 'btn small ghost', type: 'button', onclick: () => openDrawer(entry) }, h('span', { text: '#' + entry.sequence }), icon('chev-right'))),
+          metadata.reason ? h('div', { class: 'tl-reason' }, icon('note', 'ic-s'), h('span', { text: String(metadata.reason) })) : null,
+          changes.length ? h('div', { class: 'tl-changes' }, changes) : null));
+    }));
+    host.replaceChildren(head, list);
+  }
+
+  function summarizeChanges(entry) {
+    const oldValues = parseJson(entry.oldValues);
+    const newValues = parseJson(entry.newValues);
+    if (entry.action === 'Redacted') {
+      const count = newValues && newValues.entries ? Object.keys(newValues.entries).length : 0;
+      return [h('span', { class: 'tl-change' }, icon('eraser', 'ic-s'), `Redacted values of ${plural(count, 'earlier entry', 'earlier entries')}`)];
+    }
+    const isObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
+    if (entry.action === 'Added' && isObject(newValues)) {
+      return [h('span', { class: 'tl-change muted', text: `Created with ${plural(Object.keys(newValues).length, 'value', 'values')}` })];
+    }
+    if (entry.action === 'Deleted') return [h('span', { class: 'tl-change muted', text: 'Deleted' })];
+    if (!isObject(newValues)) return [];
+    return Object.keys(newValues).sort().slice(0, 8).map((key) => h('span', { class: 'tl-change' },
+      h('strong', { text: key }),
+      isObject(oldValues) && key in oldValues ? h('span', { class: 'from' }, valueNode(oldValues[key])) : null,
+      h('span', { class: 'arrow', 'aria-hidden': 'true', text: '→' }),
+      h('span', { class: 'to' }, valueNode(newValues[key]))));
   }
 
   // ------------------------------------------------------------------- drawer
@@ -603,10 +672,12 @@
     drawerReturnFocus = document.activeElement;
     const oldValues = parseJson(entry.oldValues);
     const newValues = parseJson(entry.newValues);
+    const metadata = parseJson(entry.metadata);
+    const hashFormat = { 0: 'Legacy (1.x)', 2: 'Canonical v2', 3: 'Redactable v3' }[entry.hashVersion] || 'v' + entry.hashVersion;
 
     drawer.replaceChildren(
       h('div', { class: 'drawer-head' },
-        h('h2', { text: `${entry.table} · ${entry.recordId}` }),
+        h('h2', { text: `${entry.table} · ${recordText(entry.recordId)}` }),
         actionPill(entry.action),
         h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Close', onclick: closeDrawer }, icon('x'))),
       h('div', { class: 'drawer-body' },
@@ -616,17 +687,26 @@
           metaItem('table', 'Table', entry.table),
           metaItem('hash', 'Sequence', '#' + number.format(entry.sequence)),
           metaItem('key', 'Key', entry.keyId || 'default'),
-          metaItem('shield', 'Hash format', entry.hashVersion === 0 ? 'Legacy (1.x)' : 'Canonical v' + entry.hashVersion))),
-        h('section', null, h('h3', { text: 'Changes' }), diffView(entry.action, oldValues, newValues)),
+          metaItem('shield', 'Hash format', hashFormat))),
+        metadata && typeof metadata === 'object' && Object.keys(metadata).length
+          ? h('section', null, h('h3', { text: 'Context' }), h('div', { class: 'diff single', role: 'table' },
+            Object.keys(metadata).sort().map((key) => h('div', { class: 'diff-row', role: 'row' },
+              h('span', { class: 'prop', text: key }), h('span', null, valueNode(metadata[key]))))))
+          : null,
+        entry.action === 'Redacted'
+          ? h('section', null, h('h3', { text: 'Redaction' }), redactionView(newValues))
+          : h('section', null, h('h3', { text: 'Changes' }), diffView(entry.action, oldValues, newValues)),
         h('section', null, h('h3', { text: 'Hash chain' }),
           h('div', { class: 'hashbox' },
             hashRow('Previous', entry.previousHash),
             h('div', { class: 'join' }, icon('link')),
             hashRow('This entry', entry.currentHash))),
         h('details', { class: 'fold' }, h('summary', { text: 'Raw values' }),
-          h('pre', { class: 'raw', text: JSON.stringify({ oldValues, newValues }, null, 2) })),
+          h('pre', { class: 'raw', text: JSON.stringify({ oldValues, newValues, metadata }, null, 2) })),
         h('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap' } },
-          h('a', { class: 'btn small', href: '#/trail?table=' + encodeURIComponent(entry.table) + '&recordId=' + encodeURIComponent(entry.recordId), onclick: () => closeDrawer() }, icon('list'), h('span', { text: 'History of this record' })))));
+          isTextMarker(entry.recordId) || entry.recordId === '*'
+            ? null
+            : h('a', { class: 'btn small', href: '#/trail?table=' + encodeURIComponent(entry.table) + '&recordId=' + encodeURIComponent(entry.recordId), onclick: () => closeDrawer() }, icon('history'), h('span', { text: 'History of this record' })))));
 
     drawer.inert = false;
     drawer.setAttribute('aria-hidden', 'false');
@@ -657,8 +737,18 @@
     try { return JSON.parse(text); } catch { return text; }
   }
 
+  function redactionView(values) {
+    const entries = values && values.entries ? Object.entries(values.entries) : [];
+    if (!entries.length) return h('p', { class: 'muted', text: 'No values were listed.' });
+    const label = (field) => field === 'r' ? 'record id' : field === 'u' ? 'user' : field.slice(2) + (field[0] === 'o' ? ' (old)' : field[0] === 'n' ? ' (new)' : ' (context)');
+    return h('div', { class: 'diff single', role: 'table' }, entries.map(([id, fields]) => h('div', { class: 'diff-row', role: 'row' },
+      h('span', { class: 'prop mono', text: id.slice(0, 8) + '…', title: id }),
+      h('span', null, fields.map(label).join(', ')))));
+  }
+
   function valueNode(value) {
     if (value === null || value === undefined) return h('span', { class: 'faint', text: 'null' });
+    if (isJsonMarker(value) || isTextMarker(value)) return redactedTag();
     if (typeof value === 'string' && /^\[MASKED:[0-9a-f]{8}\]$/.test(value)) return h('span', { class: 'masked', title: 'Stored as a keyed fingerprint, never as clear text', text: value });
     if (typeof value === 'object') return h('span', { class: 'mono', text: JSON.stringify(value) });
     const text = String(value);
@@ -756,7 +846,8 @@
             step('link', 'Every link', 'Each entry must point to the hash of its predecessor.'),
             step('hash', 'Every hash', 'All fields, the user and the timestamp are recomputed with the secret key (HMAC-SHA256).'),
             step('key', 'The chain head', 'The signed head exposes entries that were deleted from the end of the chain.'),
-            step('anchor', 'Your anchors', 'Hashes stored elsewhere must still occur in the chain.')))),
+            step('anchor', 'Your anchors', 'Hashes stored elsewhere must still occur in the chain.'),
+            step('eraser', 'Redactions', 'A redacted value is only accepted when a sealed redaction entry says who removed it and why.')))),
       state.overview.verification ? (showResults(results, state.overview.verification), results) : results);
   }
 
@@ -782,6 +873,8 @@
           h('span', { class: 'pill idle', text: `${plural(t.recordsChecked, 'entry', 'entries')}` }),
           t.anchorsMatched ? h('span', { class: 'pill accent', text: `${plural(t.anchorsMatched, 'anchor', 'anchors')} matched` }) : null,
           t.failedSequence ? h('span', { class: 'pill bad', text: `Failed at entry #${t.failedSequence}` }) : null,
+          t.incremental ? h('span', { class: 'pill accent', text: 'new entries only' }) : null,
+          t.redactedRecords ? h('span', { class: 'pill redacted', text: `${plural(t.redactedRecords, 'redacted entry', 'redacted entries')}` }) : null,
           h('span', { class: 'pill idle', text: `${t.durationMs} ms` })))));
     host.replaceChildren(header, ...items);
   }
