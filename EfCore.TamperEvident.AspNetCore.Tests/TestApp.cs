@@ -47,7 +47,7 @@ namespace EfCore.TamperEvident.AspNetCore.Tests
     /// <summary>Authenticates a request when it carries an <c>X-Test-User</c> header.</summary>
     public sealed class HeaderAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
     {
-        public const string Scheme = "Test";
+        public const string SchemeName = "Test";
 
         public HeaderAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
             : base(options, logger, encoder)
@@ -61,8 +61,8 @@ namespace EfCore.TamperEvident.AspNetCore.Tests
                 return Task.FromResult(AuthenticateResult.NoResult());
             }
 
-            var identity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, user.ToString()) }, Scheme);
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme)));
+            var identity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, user.ToString()) }, SchemeName);
+            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
         }
     }
 
@@ -102,7 +102,7 @@ namespace EfCore.TamperEvident.AspNetCore.Tests
             builder.Logging.ClearProviders();
 
             builder.Services.AddHttpContextAccessor();
-            builder.Services.AddAuthentication(HeaderAuthHandler.Scheme).AddScheme<AuthenticationSchemeOptions, HeaderAuthHandler>(HeaderAuthHandler.Scheme, _ => { });
+            builder.Services.AddAuthentication(HeaderAuthHandler.SchemeName).AddScheme<AuthenticationSchemeOptions, HeaderAuthHandler>(HeaderAuthHandler.SchemeName, _ => { });
             builder.Services.AddAuthorization();
 
             if (registerAuditOptions)

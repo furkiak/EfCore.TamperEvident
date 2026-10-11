@@ -107,7 +107,11 @@ namespace EfCore.TamperEvident.Tests
 
         private ShopDb Create() => new(_connection, _options);
 
-        public void Dispose() => _connection.Dispose();
+        public void Dispose()
+        {
+            _connection.Dispose();
+            GC.SuppressFinalize(this);
+        }
 
         [Fact]
         public async Task EntityGraphsWithNavigationCycles_AreAudited_WithoutSerializationErrors()

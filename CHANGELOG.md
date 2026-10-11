@@ -22,7 +22,7 @@ See [Upgrading from 1.x](README.md#upgrading-from-1x).
 
 - `EfCore.TamperEvident.AspNetCore` package: the **Liquid Glass dashboard** (`MapTamperEvidentDashboard`), scheduled verification (`AddTamperEvidentVerification`), a health check, and HTTP user attribution (`UseHttpContextUser`).
 - Support for the synchronous `SaveChanges()`, `TransactionScope`, and `EnableRetryOnFailure` execution strategies.
-- Net 8, .NET 9 and .NET 10 targets with EF Core 8, 9 and 10.
+- .NET 8, .NET 9 and .NET 10 targets with EF Core 8, 9 and 10.
 - Automatic database provider detection; SQLite and the in-memory provider; table, column and schema names read from the model (snake_case, custom schemas).
 - `ApplyTamperEvidentAudit()` model configuration and index definitions on the audit tables.
 - User attribution: `UserIdProvider`, `DefaultUserId`, `AuditScope`.
@@ -30,7 +30,7 @@ See [Upgrading from 1.x](README.md#upgrading-from-1x).
 - Key rotation: `HmacKeyId`, `AdditionalHmacKeys`.
 - `AuditVerificationResult` / `AuditVerificationReport` with a failure kind, the failing sequence and timings; `VerifyAllAsync`; verification that is consistent while the application writes.
 - Anchor publishers: `WebhookAnchorPublisher`, `FileAnchorPublisher`, `CompositeAnchorPublisher`; retries with back-off; delivery only after the transaction committed; `AnchorSources` and `FlushAnchorsAsync`.
-- `AuditAction.Restored` detection and `DeletedAt`-style soft deletes.
+- `AuditActions.Restored` detection and `DeletedAt`-style soft deletes.
 - `AuditExporter` (CSV, JSON Lines, evidence bundle) and composable audit queries (`AuditLogs()`, `ForTable`, `ByUser`, `GetAuditHistoryAsync`...).
 - `AddTamperEvident` / `AddTamperEvidentVerifier` dependency injection extensions and typed `UseTamperEvidentAudit` overloads.
 - Provider conformance tests (PostgreSQL, MySQL/MariaDB, SQL Server) and a runnable `samples/QuickStart`.

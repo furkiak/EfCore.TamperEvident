@@ -65,26 +65,26 @@ namespace EfCore.TamperEvident.IntegrationTests
 
         public DbSet<Line> Lines => Set<Line>();
 
-        protected override void OnConfiguring(DbContextOptionsBuilder options)
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
             switch (_provider)
             {
                 case Provider.Postgres:
-                    options.UseNpgsql(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });
+                    optionsBuilder.UseNpgsql(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });
                     break;
                 case Provider.MySql:
                     // TE_TEST_MYSQL_FLAVOR=mysql selects MySQL 8; the default is MariaDB.
                     var flavor = string.Equals(Environment.GetEnvironmentVariable("TE_TEST_MYSQL_FLAVOR"), "mysql", StringComparison.OrdinalIgnoreCase)
                         ? ServerVersion.Create(8, 4, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MySql)
                         : ServerVersion.Create(10, 11, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MariaDb);
-                    options.UseMySql(_connectionString, flavor, o => { if (_retry) o.EnableRetryOnFailure(); });
+                    optionsBuilder.UseMySql(_connectionString, flavor, o => { if (_retry) o.EnableRetryOnFailure(); });
                     break;
                 default:
-                    options.UseSqlServer(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });
+                    optionsBuilder.UseSqlServer(_connectionString, o => { if (_retry) o.EnableRetryOnFailure(); });
                     break;
             }
 
-            options.UseTamperEvidentAudit(_audit);
+            optionsBuilder.UseTamperEvidentAudit(_audit);
         }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
