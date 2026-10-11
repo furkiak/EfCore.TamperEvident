@@ -8,6 +8,7 @@ namespace EfCore.TamperEvident.Benchmarks
     public class VerificationBenchmarks
     {
         private BenchmarkDb _db = null!;
+        private AuditCheckpoint _checkpoint = null!;
 
         [Params(10_000)]
         public int Entries { get; set; }
@@ -26,6 +27,14 @@ namespace EfCore.TamperEvident.Benchmarks
 
                 context.SaveChanges();
             }
+
+            // A checkpoint 100 entries before the head, as a scheduled incremental verification would have it.
+            using (var context = _db.CreatePlain())
+            {
+                var hash = context.Set<EfCore.TamperEvident.Models.AuditLog>()
+                    .Where(l => l.SequenceNumber == Entries - 100).Select(l => l.CurrentHash).Single();
+                _checkpoint = new AuditCheckpoint("Customers", Entries - 100, hash);
+            }
         }
 
         [GlobalCleanup]
@@ -36,6 +45,14 @@ namespace EfCore.TamperEvident.Benchmarks
         {
             await using var context = _db.CreatePlain();
             var result = await new AuditVerifier(context, _db.Options).VerifyTableIntegrityAsync("Customers");
+            return result.IsValid ? true : throw new InvalidOperationException(result.Message);
+        }
+
+        [Benchmark(Description = "Incremental verification (100 new entries)")]
+        public async Task<bool> IncrementalVerification()
+        {
+            await using var context = _db.CreatePlain();
+            var result = await new AuditVerifier(context, _db.Options).VerifyFromCheckpointAsync(_checkpoint);
             return result.IsValid ? true : throw new InvalidOperationException(result.Message);
         }
     }
