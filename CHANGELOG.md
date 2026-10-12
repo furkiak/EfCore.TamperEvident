@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] - 2026-10-11
+## [2.0.0] - 2026-10-12
 
 2.0 is a **major** release: it fixes several serious defects of 1.x, which required a schema change and a few API changes,
 and adds GDPR/KVKK redaction, reasons and metadata, incremental and offline verification, a readable history API,
