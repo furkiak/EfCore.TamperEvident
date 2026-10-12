@@ -6,8 +6,8 @@
     <AssemblyName>EfCore.TamperEvident</AssemblyName>
     <PackageId>EfCore.TamperEvident</PackageId>
     <Title>Tamper-Evident Audit Trail for EF Core</Title>
-    <Description>Tamper-evident, zero-trust audit logging for Entity Framework Core. Every change is sealed into a per-table HMAC-SHA256 hash chain whose head is authenticated and can be anchored outside the database (SMTP, webhook, file), so manipulation by database administrators becomes cryptographically detectable.</Description>
-    <PackageTags>efcore;entity-framework-core;audit;audit-log;audit-trail;security;tamper-evident;hash-chain;hmac;compliance;zero-trust</PackageTags>
+    <Description>Tamper-evident, zero-trust audit logging for Entity Framework Core. Every change is sealed into a per-table HMAC-SHA256 hash chain in the same transaction, with a signed head and anchors outside the database, so manipulation, even by database administrators, is cryptographically detectable. GDPR/KVKK redaction without breaking the chain, reasons and request metadata, incremental and offline verification, history and time travel, OpenTelemetry.</Description>
+    <PackageTags>efcore;entity-framework-core;audit;audit-log;audit-trail;security;tamper-evident;hash-chain;hmac;compliance;zero-trust;gdpr;kvkk;redaction;opentelemetry</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
@@ -24,7 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\docs\nuget\EfCore.TamperEvident\README.md" Pack="true" PackagePath="\" Visible="false" />
     <None Include="..\docs\assets\icon.png" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 

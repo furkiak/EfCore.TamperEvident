@@ -6,7 +6,7 @@
     <AssemblyName>EfCore.TamperEvident.AspNetCore</AssemblyName>
     <PackageId>EfCore.TamperEvident.AspNetCore</PackageId>
     <Title>ASP.NET Core integration for EfCore.TamperEvident</Title>
-    <Description>A Liquid Glass audit dashboard, scheduled integrity verification, a health check and HTTP user attribution for EfCore.TamperEvident.</Description>
+    <Description>ASP.NET Core integration for EfCore.TamperEvident: a Liquid Glass audit dashboard (trail, diffs, record history, verification, exports), scheduled incremental verification, a health check, and HTTP user and request metadata.</Description>
     <PackageTags>efcore;audit;audit-log;dashboard;aspnetcore;health-check;tamper-evident;compliance</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
@@ -29,7 +29,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\docs\nuget\EfCore.TamperEvident.AspNetCore\README.md" Pack="true" PackagePath="\" Visible="false" />
     <None Include="..\docs\assets\icon.png" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
