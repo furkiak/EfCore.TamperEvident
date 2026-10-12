@@ -134,7 +134,7 @@ jobs:
           ./cli/tamper-evident --version
           test "$(./cli/tamper-evident keygen | base64 -d | wc -c)" -eq 48
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
           path: artifacts/*
