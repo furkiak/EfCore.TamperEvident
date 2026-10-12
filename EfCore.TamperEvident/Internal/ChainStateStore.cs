@@ -72,7 +72,7 @@ namespace EfCore.TamperEvident.Internal
                 return Track(context, table, existing, utcNow);
             }
 
-            var fresh = await SelectForUpdateAsync(context, commands, table, cancellationToken).ConfigureAwait(false);
+            var fresh = await info.Relational!.SelectForUpdateAsync(context, table, cancellationToken).ConfigureAwait(false);
             if (fresh is null)
             {
                 // The first write to a table: create the head idempotently, so that concurrent first writers
@@ -81,7 +81,7 @@ namespace EfCore.TamperEvident.Internal
                     commands.InsertIfMissing,
                     new object[] { table, GenesisHash, 0, utcNow, 0L },
                     cancellationToken).ConfigureAwait(false);
-                fresh = await SelectForUpdateAsync(context, commands, table, cancellationToken).ConfigureAwait(false)
+                fresh = await info.Relational!.SelectForUpdateAsync(context, table, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidOperationException($"The audit chain head of table '{table}' could not be created.");
             }
 
@@ -96,36 +96,17 @@ namespace EfCore.TamperEvident.Internal
                 return Track(context, table, existing, utcNow);
             }
 
-            var fresh = SelectForUpdate(context, commands, table);
+            var fresh = info.Relational!.SelectForUpdate(context, table);
             if (fresh is null)
             {
                 context.Database.ExecuteSqlRaw(
                     commands.InsertIfMissing,
                     new object[] { table, GenesisHash, 0, utcNow, 0L });
-                fresh = SelectForUpdate(context, commands, table)
+                fresh = info.Relational!.SelectForUpdate(context, table)
                     ?? throw new InvalidOperationException($"The audit chain head of table '{table}' could not be created.");
             }
 
             return fresh;
-        }
-
-        private static async Task<AuditChainState?> SelectForUpdateAsync(
-            DbContext context, AuditSqlCommands commands, string table, CancellationToken cancellationToken)
-        {
-            var rows = await context.Set<AuditChainState>()
-                .FromSqlRaw(commands.SelectForUpdate, table)
-                .AsNoTracking()
-                .ToListAsync(cancellationToken).ConfigureAwait(false);
-            return rows.FirstOrDefault();
-        }
-
-        private static AuditChainState? SelectForUpdate(DbContext context, AuditSqlCommands commands, string table)
-        {
-            return context.Set<AuditChainState>()
-                .FromSqlRaw(commands.SelectForUpdate, table)
-                .AsNoTracking()
-                .ToList()
-                .FirstOrDefault();
         }
 
         // Non-relational path: returns a tracked instance holding the current values.

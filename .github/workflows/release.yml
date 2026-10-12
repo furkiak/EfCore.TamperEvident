@@ -1,6 +1,7 @@
 name: Release
 
-# Publishes both packages to NuGet when a version tag (for example v2.0.0) is pushed.
+# Publishes the packages (library, ASP.NET Core package and command line tool) to NuGet when a version tag
+# (for example v2.0.0) is pushed.
 # Requires the repository secret NUGET_API_KEY.
 on:
   push:
@@ -40,11 +41,13 @@ jobs:
         run: |
           dotnet test EfCore.TamperEvident.Tests --configuration Release
           dotnet test EfCore.TamperEvident.AspNetCore.Tests --configuration Release
+          dotnet test EfCore.TamperEvident.Cli.Tests --configuration Release
 
       - name: Pack
         run: |
           dotnet pack EfCore.TamperEvident/EfCore.TamperEvident.csproj --configuration Release --output artifacts
           dotnet pack EfCore.TamperEvident.AspNetCore/EfCore.TamperEvident.AspNetCore.csproj --configuration Release --output artifacts
+          dotnet pack tools/EfCore.TamperEvident.Cli/EfCore.TamperEvident.Cli.csproj --configuration Release --output artifacts
 
       - name: Push to NuGet
         run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

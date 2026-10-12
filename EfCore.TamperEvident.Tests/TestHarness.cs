@@ -62,4 +62,16 @@ namespace EfCore.TamperEvident.Tests
 
         public void Dispose() => _connection.Dispose();
     }
+
+    /// <summary>A clock that only moves when told to.</summary>
+    public sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset _now;
+
+        public TestClock(DateTimeOffset start) => _now = start;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
 }

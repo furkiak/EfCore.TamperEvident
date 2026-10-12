@@ -14,6 +14,19 @@ namespace EfCore.TamperEvident.AspNetCore
         public TimeSpan InitialDelay { get; set; } = TimeSpan.FromMinutes(1);
 
         /// <summary>
+        /// Between full verifications, verify only the entries appended since the previous successful run (see
+        /// <see cref="AuditVerifier.VerifyFromCheckpointAsync"/>). The cost of a run then depends on the number of new
+        /// entries instead of the size of the trail. Defaults to <c>true</c>.
+        /// </summary>
+        public bool Incremental { get; set; } = true;
+
+        /// <summary>
+        /// How often the whole trail is verified from the start when <see cref="Incremental"/> is on: only a full
+        /// verification re-reads old entries. The first run after a start is always full. Defaults to 24 hours.
+        /// </summary>
+        public TimeSpan FullVerificationInterval { get; set; } = TimeSpan.FromHours(24);
+
+        /// <summary>
         /// Supplies the externally stored anchors (table to anchor hashes) every verification is checked against, for
         /// example <see cref="AnchorSources.FromFile(string)"/>. Without it only the chain itself is verified.
         /// </summary>

@@ -24,6 +24,7 @@ builder.Services.AddTamperEvident((sp, audit) =>
 {
     audit.HmacSecretKey = secretKey;
     audit.UseHttpContextUser(sp);                         // who changed it: the authenticated user of the request
+    audit.UseHttpRequestMetadata(sp);                     // from where: client IP, user agent and request (redactable)
     audit.AnchorThreshold = 25;                           // publish an anchor every 25 entries per table...
     audit.CustomAnchorPublisher = new FileAnchorPublisher(anchorFile); // ...to a place the database cannot reach
 });
@@ -69,6 +70,9 @@ app.MapGet("/", () => Results.Text("""
       POST /customers            create a customer   {"name":"Ada"}
       PUT  /customers/{id}       change a customer   {"company":"Acme"}
       DELETE /customers/{id}     delete a customer
+      GET  /customers/{id}/history          who changed what, when and why
+      GET  /customers/{id}/as-of?time=...   the customer as it was at a point in time
+      POST /customers/{id}/erase            GDPR / KVKK erasure: redact personal data, keep the chain verifiable
       POST /demo/tamper          simulate a database administrator rewriting history (watch the dashboard turn red)
       POST /demo/repair          undo the simulated attack
     """));
@@ -103,8 +107,43 @@ app.MapPut("/customers/{id:int}", async (int id, CustomerInput input, AppDbConte
     customer.Name = input.Name ?? customer.Name;
     customer.Email = input.Email ?? customer.Email;
     customer.Company = input.Company ?? customer.Company;
-    await db.SaveChangesAsync();
+
+    // The reason is sealed into the audit entry together with the change.
+    using (input.Reason is null ? null : AuditScope.WithReason(input.Reason))
+    {
+        await db.SaveChangesAsync();
+    }
+
     return Results.Ok(customer);
+}).RequireAuthorization();
+
+app.MapGet("/customers/{id:int}/history", async (int id, AppDbContext db) =>
+    (await db.GetAuditTrailAsync("Customers", id.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+        .Select(change => new
+        {
+            change.SequenceNumber,
+            change.Action,
+            change.UserId,
+            change.TimestampUtc,
+            change.Reason,
+            changes = change.Changes.Select(c => new { c.Property, from = c.OldValue.ToString(), to = c.NewValue.ToString() })
+        })).RequireAuthorization();
+
+app.MapGet("/customers/{id:int}/as-of", async (int id, DateTimeOffset time, AppDbContext db) =>
+{
+    var snapshot = await db.GetStateAsOfAsync("Customers", id.ToString(System.Globalization.CultureInfo.InvariantCulture), time);
+    return snapshot.Exists ? Results.Ok(snapshot.ToObject<Customer>()) : Results.NotFound();
+}).RequireAuthorization();
+
+app.MapPost("/customers/{id:int}/erase", async (int id, AppDbContext db) =>
+{
+    var result = await db.RedactAuditTrailAsync("Customers", id.ToString(System.Globalization.CultureInfo.InvariantCulture), new AuditRedactionRequest
+    {
+        Reason = $"Erasure request for customer {id}",
+        Properties = ["Name", "Email", "CardNumber"],
+        MetadataKeys = ["ip", "userAgent"]
+    });
+    return Results.Ok(result);
 }).RequireAuthorization();
 
 app.MapDelete("/customers/{id:int}", async (int id, AppDbContext db) =>
@@ -149,4 +188,4 @@ if (app.Environment.IsDevelopment())
 
 app.Run();
 
-internal sealed record CustomerInput(string? Name, string? Email, string? Company);
+internal sealed record CustomerInput(string? Name, string? Email, string? Company, string? Reason);

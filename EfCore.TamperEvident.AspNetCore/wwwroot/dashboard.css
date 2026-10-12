@@ -398,6 +398,7 @@ textarea.field { height: auto; min-height: 96px; padding: 12px 14px; resize: ver
 .pill.deleted { --tint: var(--red); }
 .pill.softdelete { --tint: var(--orange); }
 .pill.restored { --tint: var(--teal); }
+.pill.redacted { --tint: var(--purple); }
 .pill.ok { --tint: var(--green); }
 .pill.bad { --tint: var(--red); }
 .pill.idle { --tint: var(--label-2); }
@@ -587,6 +588,34 @@ textarea.field { height: auto; min-height: 96px; padding: 12px 14px; resize: ver
 .diff-row .none { color: var(--label-3); }
 .diff.single .diff-row { grid-template-columns: minmax(90px, 0.6fr) 1.4fr; }
 .masked { font: 600 11.5px var(--mono); color: var(--purple); background: color-mix(in srgb, var(--purple) 14%, transparent); padding: 2px 8px; border-radius: 999px; }
+.redacted-value { display: inline-flex; align-items: center; gap: 5px; font: 650 11.5px var(--font); letter-spacing: 0.02em; color: var(--purple); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--purple) 16%, transparent) 0 6px, color-mix(in srgb, var(--purple) 8%, transparent) 6px 12px); padding: 2px 9px; border-radius: 999px; border: 0.5px dashed color-mix(in srgb, var(--purple) 45%, transparent); }
+.redacted-value .ic { width: 12px; height: 12px; }
+.avatar.ghost { background: var(--fill-hover); color: var(--label-3); box-shadow: none; }
+.ic-s { width: 13px; height: 13px; }
+.btn.ghost { background: transparent; border-color: transparent; box-shadow: none; }
+
+/* Record history ------------------------------------------------------------------------ */
+.timeline { list-style: none; margin: 0; padding: 0 0 0 6px; display: flex; flex-direction: column; }
+.tl-item { position: relative; display: flex; gap: 16px; padding: 0 0 18px; animation: block-in 0.5s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms); --tint: var(--blue); }
+.tl-item.added { --tint: var(--green); }
+.tl-item.deleted { --tint: var(--red); }
+.tl-item.softdelete { --tint: var(--orange); }
+.tl-item.restored { --tint: var(--teal); }
+.tl-item.redacted { --tint: var(--purple); }
+.tl-item::before { content: ""; position: absolute; left: 6px; top: 18px; bottom: -2px; width: 2px; border-radius: 2px; background: linear-gradient(180deg, color-mix(in srgb, var(--tint) 55%, transparent), var(--separator)); }
+.tl-item:last-child::before { display: none; }
+.tl-dot { width: 14px; height: 14px; margin-top: 6px; flex: none; border-radius: 50%; background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--tint) 45%, #fff), var(--tint)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--tint) 18%, transparent), 0 4px 10px -3px var(--tint); }
+.tl-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.tl-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tl-head .btn { margin-left: auto; }
+.tl-reason { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; padding: 5px 11px; border-radius: 12px; font-size: 13px; color: var(--label); background: var(--fill); border: 0.5px solid var(--glass-border); }
+.tl-reason .ic { color: var(--accent); }
+.tl-changes { display: flex; flex-wrap: wrap; gap: 6px; }
+.tl-change { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 4px 10px; border-radius: 10px; font-size: 12.5px; background: var(--code-bg); border: 0.5px solid var(--separator); overflow: hidden; }
+.tl-change strong { font-weight: 650; color: var(--label-2); }
+.tl-change .from { color: color-mix(in srgb, var(--red) 70%, var(--label)); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--red) 40%, transparent); max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-change .to { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-change .arrow { color: var(--label-3); }
 .hashbox { display: flex; flex-direction: column; gap: 0; }
 .hashbox .hrow { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 14px; background: var(--code-bg); border: 0.5px solid var(--separator); }
 .hashbox .hrow .lbl { width: 78px; flex: none; font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--label-3); }

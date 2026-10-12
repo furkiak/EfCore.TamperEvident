@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Diagnostics;
 using EfCore.TamperEvident.Models;
 using EfCore.TamperEvident.Services;
 using Microsoft.Extensions.Logging;
@@ -96,20 +98,30 @@ namespace EfCore.TamperEvident.Internal
             await Task.WhenAll(deliveries).ConfigureAwait(false);
         }
 
+        private static void Count(AuditAnchor anchor, string result) => TamperEvidentTelemetry.AnchorsPublished.Add(1,
+            new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Table, anchor.TableName),
+            new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Result, result));
+
         private async Task DeliverAsync(IAnchorPublisher publisher, AuditAnchor anchor, ILogger? logger, CancellationToken cancellationToken)
         {
             var delay = _options.AnchorRetryDelay;
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.PublishAnchor);
+            activity?.SetTag(TamperEvidentTelemetry.Tags.Table, anchor.TableName);
+            activity?.SetTag("tamper_evident.publisher", publisher.GetType().Name);
             for (var attempt = 1; ; attempt++)
             {
                 try
                 {
                     await publisher.PublishAsync(anchor, cancellationToken).ConfigureAwait(false);
+                    Count(anchor, "success");
                     return;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     if (attempt >= _options.AnchorMaxAttempts)
                     {
+                        Count(anchor, "failure");
+                        activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                         logger?.LogError(ex, "Giving up delivering the anchor of table {TableName} (sequence {Sequence}) after {Attempts} attempts.",
                             anchor.TableName, anchor.SequenceNumber, attempt);
 

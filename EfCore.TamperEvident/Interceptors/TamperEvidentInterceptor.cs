@@ -1,6 +1,8 @@
 using System.Data.Common;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using EfCore.TamperEvident.Configuration;
+using EfCore.TamperEvident.Diagnostics;
 using EfCore.TamperEvident.Internal;
 using EfCore.TamperEvident.Models;
 using Microsoft.EntityFrameworkCore;
@@ -48,6 +50,13 @@ namespace EfCore.TamperEvident.Interceptors
             _reader = new AuditEntryReader(options, _keys);
             _dispatcher = new AnchorDispatcher(options);
         }
+
+        /// <summary>The options the interceptor was created with.</summary>
+        internal TamperEvidentOptions Options => _options;
+
+        internal AuditKeyRing Keys => _keys;
+
+        internal AuditEntryReader Reader => _reader;
 
         /// <summary>
         /// Waits until all anchors that are being delivered in the background reached their publisher.
@@ -208,13 +217,13 @@ namespace EfCore.TamperEvident.Interceptors
                 return null;
             }
 
-            var session = new AuditSession(AuditModelInfo.Resolve(context, _options), ResolveUserId(context), entries);
+            var session = new AuditSession(AuditModelInfo.Resolve(context, _options), ResolveUserId(context), ResolveMetadata(context), entries);
             session.Preps.AddRange(preps);
             _sessions.AddOrUpdate(context, session);
             return session;
         }
 
-        private string ResolveUserId(DbContext context)
+        internal string ResolveUserId(DbContext context)
         {
             var user = AuditScope.CurrentUserId ?? _options.UserIdProvider?.Invoke(context);
             if (string.IsNullOrWhiteSpace(user))
@@ -223,6 +232,35 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             return user.Length > 256 ? user[..256] : user;
+        }
+
+        /// <summary>The trace id, the metadata of the provider and of the active scopes, as deterministic JSON.</summary>
+        internal string? ResolveMetadata(DbContext context)
+        {
+            Dictionary<string, object?>? values = null;
+
+            if (_options.CaptureTraceId && Activity.Current is { IdFormat: ActivityIdFormat.W3C } activity)
+            {
+                (values ??= new(StringComparer.Ordinal))["traceId"] = activity.TraceId.ToHexString();
+            }
+
+            if (_options.MetadataProvider?.Invoke(context) is { } provided)
+            {
+                foreach (var (key, value) in provided)
+                {
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        (values ??= new(StringComparer.Ordinal))[key] = value;
+                    }
+                }
+            }
+
+            foreach (var (key, value) in AuditScope.CurrentMetadata)
+            {
+                (values ??= new(StringComparer.Ordinal))[key] = value;
+            }
+
+            return values is null ? null : AuditSerializer.Serialize(values);
         }
 
         private DateTime NowUtc() => _options.TimeProvider.GetUtcNow().UtcDateTime;
@@ -289,6 +327,8 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             session.IsWritingAudit = true;
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Seal);
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 var now = _options.TimeProvider.GetUtcNow();
@@ -300,9 +340,9 @@ namespace EfCore.TamperEvident.Interceptors
 
                 var batch = Seal(session, chains, now);
 
-                if (session.Info.Commands is { } commands)
+                if (session.Info.IsRelational)
                 {
-                    AuditWriter.Write(context, commands, batch.Logs, chains.Values.ToList());
+                    AuditWriter.Write(context, session.Info, batch.Logs, chains.Values.ToList());
                 }
                 else
                 {
@@ -317,10 +357,12 @@ namespace EfCore.TamperEvident.Interceptors
                 }
 
                 _sessions.Remove(context);
+                Record(activity, batch.Logs, started);
                 ScheduleAnchors(context, session, batch.Anchors).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 Abort(context, session);
                 throw Wrap(ex);
             }
@@ -339,6 +381,8 @@ namespace EfCore.TamperEvident.Interceptors
             }
 
             session.IsWritingAudit = true;
+            using var activity = TamperEvidentTelemetry.Source.StartActivity(TamperEvidentTelemetry.Activities.Seal);
+            var started = Stopwatch.GetTimestamp();
             try
             {
                 var now = _options.TimeProvider.GetUtcNow();
@@ -351,9 +395,9 @@ namespace EfCore.TamperEvident.Interceptors
 
                 var batch = Seal(session, chains, now);
 
-                if (session.Info.Commands is { } commands)
+                if (session.Info.IsRelational)
                 {
-                    await AuditWriter.WriteAsync(context, commands, batch.Logs, chains.Values.ToList(), cancellationToken).ConfigureAwait(false);
+                    await AuditWriter.WriteAsync(context, session.Info, batch.Logs, chains.Values.ToList(), cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -377,15 +421,47 @@ namespace EfCore.TamperEvident.Interceptors
                 }
 
                 _sessions.Remove(context);
+                Record(activity, batch.Logs, started);
                 await ScheduleAnchors(context, session, batch.Anchors, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 await AbortAsync(context, session).ConfigureAwait(false);
                 throw Wrap(ex);
             }
 
             return result;
+        }
+
+        private static void Record(Activity? activity, List<AuditLog> logs, long started)
+        {
+            if (activity is not null)
+            {
+                activity.SetTag(TamperEvidentTelemetry.Tags.Entries, logs.Count);
+                activity.SetTag(TamperEvidentTelemetry.Tags.Table, string.Join(",", logs.Select(l => l.TableName).Distinct(StringComparer.Ordinal)));
+            }
+
+            if (TamperEvidentTelemetry.SealDuration.Enabled)
+            {
+                TamperEvidentTelemetry.SealDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
+            }
+
+            if (TamperEvidentTelemetry.EntriesSealed.Enabled)
+            {
+                // The entries are grouped by table.
+                for (var start = 0; start < logs.Count;)
+                {
+                    var end = start;
+                    while (end < logs.Count && string.Equals(logs[end].TableName, logs[start].TableName, StringComparison.Ordinal))
+                    {
+                        end++;
+                    }
+
+                    TamperEvidentTelemetry.EntriesSealed.Add(end - start, new KeyValuePair<string, object?>(TamperEvidentTelemetry.Tags.Table, logs[start].TableName));
+                    start = end;
+                }
+            }
         }
 
         // Cancellation is passed through; everything else becomes a non-transient AuditTrailException.
@@ -418,8 +494,8 @@ namespace EfCore.TamperEvident.Interceptors
         /// <summary>Chains the captured changes onto the (locked) chain heads.</summary>
         private SealedBatch Seal(AuditSession session, Dictionary<string, AuditChainState> chains, DateTimeOffset now)
         {
-            var key = _keys.CurrentKey;
-            var keyId = _keys.CurrentKeyId;
+            var key = _keys.Current;
+            var keyId = key.Id;
             var anchors = new List<AuditAnchor>();
             var logs = new List<AuditLog>(session.Preps.Count);
 
@@ -446,10 +522,11 @@ namespace EfCore.TamperEvident.Interceptors
                         ActionType = prep.Action,
                         OldValues = prep.OldValues,
                         NewValues = prep.NewValues,
+                        Metadata = session.Metadata,
                         UserId = session.UserId,
                         TimestampTicks = now.UtcTicks,
                         SequenceNumber = sequence,
-                        HashVersion = AuditHashVersion.Canonical,
+                        HashVersion = AuditHashVersion.Current,
                         KeyId = keyId,
                         PreviousHash = previousHash,
                         CurrentHash = string.Empty

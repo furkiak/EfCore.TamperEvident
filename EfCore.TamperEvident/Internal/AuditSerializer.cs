@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -24,11 +25,20 @@ namespace EfCore.TamperEvident.Internal
             Converters = { new JsonStringEnumConverter() }
         };
 
+        [ThreadStatic]
+        private static ArrayBufferWriter<byte>? _buffer;
+
+        [ThreadStatic]
+        private static Utf8JsonWriter? _writer;
+
+        [ThreadStatic]
+        private static bool _inUse;
+
         /// <summary>Serializes a flat set of values (the audited properties of an entity).</summary>
         public static string Serialize(IEnumerable<KeyValuePair<string, object?>> values)
         {
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream, WriterOptions))
+            var writer = Rent(out var buffer);
+            try
             {
                 writer.WriteStartObject();
                 foreach (var pair in values.OrderBy(p => p.Key, StringComparer.Ordinal))
@@ -38,9 +48,12 @@ namespace EfCore.TamperEvident.Internal
                 }
 
                 writer.WriteEndObject();
+                return Complete(writer, buffer);
             }
-
-            return System.Text.Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+            finally
+            {
+                Return(buffer);
+            }
         }
 
         /// <summary>Serializes any object; the result is identical for equal data on every machine.</summary>
@@ -51,16 +64,71 @@ namespace EfCore.TamperEvident.Internal
                 return null;
             }
 
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream, WriterOptions))
+            var writer = Rent(out var buffer);
+            try
             {
                 WriteSorted(writer, JsonSerializer.SerializeToElement(value, value.GetType(), ValueOptions));
+                return Complete(writer, buffer);
             }
-
-            return System.Text.Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+            finally
+            {
+                Return(buffer);
+            }
         }
 
-        private static void WriteValue(Utf8JsonWriter writer, object? value)
+        /// <summary>
+        /// A writer for one JSON object whose properties the caller writes in ordinal order. Hand the buffer back with
+        /// <see cref="Complete"/> and <see cref="Return"/>. The writer and its buffer are reused by the calling thread.
+        /// </summary>
+        public static Utf8JsonWriter Rent(out ArrayBufferWriter<byte> buffer)
+        {
+            if (_inUse)
+            {
+                // Re-entered, for example by a custom converter: use a private writer.
+                buffer = new ArrayBufferWriter<byte>(256);
+                return new Utf8JsonWriter(buffer, WriterOptions);
+            }
+
+            _inUse = true;
+            buffer = _buffer ??= new ArrayBufferWriter<byte>(1024);
+            buffer.ResetWrittenCount();
+            if (_writer is null)
+            {
+                _writer = new Utf8JsonWriter(buffer, WriterOptions);
+            }
+            else
+            {
+                _writer.Reset(buffer);
+            }
+
+            return _writer;
+        }
+
+        public static string Complete(Utf8JsonWriter writer, ArrayBufferWriter<byte> buffer)
+        {
+            writer.Flush();
+            return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+
+        public static void Return(ArrayBufferWriter<byte> buffer)
+        {
+            if (!ReferenceEquals(buffer, _buffer))
+            {
+                return;
+            }
+
+            // Do not keep a huge buffer alive after an unusually large entity.
+            if (buffer.Capacity > 1024 * 1024)
+            {
+                _buffer = null;
+                _writer = null;
+            }
+
+            _inUse = false;
+        }
+
+        /// <summary>Writes a value the same way <see cref="Serialize"/> does.</summary>
+        public static void WriteValue(Utf8JsonWriter writer, object? value)
         {
             switch (value)
             {

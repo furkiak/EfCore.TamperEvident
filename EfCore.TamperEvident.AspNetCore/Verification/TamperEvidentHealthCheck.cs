@@ -35,8 +35,13 @@ namespace EfCore.TamperEvident.AspNetCore
                 ["completedUtc"] = report.CompletedUtc,
                 ["tables"] = report.Tables.Count,
                 ["records"] = report.RecordsChecked,
-                ["source"] = latest.Source
+                ["source"] = latest.Source,
+                ["incremental"] = report.Tables.Any(t => t.IsIncremental)
             };
+            if (_state.LastFullVerificationUtc is { } lastFull)
+            {
+                data["lastFullVerificationUtc"] = lastFull;
+            }
 
             if (!report.IsValid)
             {

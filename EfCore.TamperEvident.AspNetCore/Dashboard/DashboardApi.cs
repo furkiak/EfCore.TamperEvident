@@ -27,33 +27,36 @@ namespace EfCore.TamperEvident.AspNetCore
             _options = options;
         }
 
+        // Everything here reads the chain heads and index ranges only, so the overview stays fast on tables with
+        // millions of entries: the number of sequenced entries of a table is the sequence of its head.
         public async Task<IResult> Overview(HttpContext http, CancellationToken cancellationToken)
         {
             var db = http.RequestServices.GetRequiredService<TContext>();
-            var logs = db.Set<AuditLog>().AsNoTracking();
+            var heads = await HeadsAsync(db, cancellationToken);
 
-            var counts = await logs.GroupBy(l => l.TableName)
-                .Select(g => new { Table = g.Key, Records = g.Count(), LastTicks = g.Max(l => l.TimestampTicks) })
-                .ToListAsync(cancellationToken);
-            var states = await db.Set<AuditChainState>().AsNoTracking().ToListAsync(cancellationToken);
-            var users = await logs.Select(l => l.UserId).Distinct().CountAsync(cancellationToken);
-
-            var names = counts.Select(c => c.Table).Union(states.Select(s => s.TableName), StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal);
-            var tables = names.Select(name =>
-            {
-                var count = counts.FirstOrDefault(c => c.Table == name);
-                var state = states.FirstOrDefault(s => s.TableName == name);
-                return new TableDto(
-                    name,
-                    count?.Records ?? 0,
-                    state?.LastSequence ?? 0,
-                    state?.LastHash,
-                    count is null ? null : new DateTime(count.LastTicks, DateTimeKind.Utc),
-                    state?.UnanchoredCount ?? 0,
-                    state?.Mac is not null);
-            }).ToList();
+            var since = DateTime.UtcNow.AddDays(-ActiveUserDays).Ticks;
+            var users = await db.Set<AuditLog>().AsNoTracking()
+                .Where(l => l.TimestampTicks >= since)
+                .Select(l => l.UserId).Distinct().CountAsync(cancellationToken);
 
             var latest = StateOf(http).Latest;
+            var tables = heads.Select(h => new TableDto(
+                h.TableName,
+                h.Records,
+                h.LastSequence,
+                h.LastHash,
+                h.Records == 0 ? null : DateTime.SpecifyKind(h.LastModified, DateTimeKind.Utc),
+                h.UnanchoredCount,
+                h.Signed)).ToList();
+
+            // A table whose head was deleted has no row here, but the latest verification knows it.
+            foreach (var missing in latest?.Report.Tables.Where(t => t.TableName is not null && tables.All(x => x.Table != t.TableName))
+                ?? Enumerable.Empty<AuditVerificationResult>())
+            {
+                tables.Add(new TableDto(missing.TableName!, missing.RecordsChecked, missing.HeadSequence, missing.HeadHash, null, 0, false));
+            }
+
+            tables.Sort((a, b) => string.CompareOrdinal(a.Table, b.Table));
             return Json(new
             {
                 generatedUtc = DateTimeOffset.UtcNow,
@@ -64,10 +67,12 @@ namespace EfCore.TamperEvident.AspNetCore
                     tables = tables.Count,
                     records = tables.Sum(t => t.Records),
                     users,
+                    userDays = ActiveUserDays,
                     lastEntryUtc = tables.Max(t => t.LastEntryUtc)
                 },
                 tables,
                 verification = latest is null ? null : ToDto(latest.Report, latest.Source),
+                lastFullVerificationUtc = (latest is null ? null : (http.RequestServices.GetService<AuditVerificationState>()?.LastFullVerificationUtc)),
                 capabilities = new
                 {
                     verify = ResolveAuditOptions(http) is not null,
@@ -76,25 +81,96 @@ namespace EfCore.TamperEvident.AspNetCore
             });
         }
 
+        private const int ActiveUserDays = 30;
+
+        // Exact counts are cheap on small trails; above this the total is taken from the chain heads.
+        private const int ExactCountLimit = 10_000;
+
+        private static Task<List<HeadInfo>> HeadsAsync(TContext db, CancellationToken cancellationToken)
+        {
+            var logs = db.Set<AuditLog>().AsNoTracking();
+            return db.Set<AuditChainState>().AsNoTracking()
+                .Select(s => new HeadInfo
+                {
+                    TableName = s.TableName,
+                    LastSequence = s.LastSequence,
+                    LastHash = s.LastHash,
+                    LastModified = s.LastModified,
+                    UnanchoredCount = s.UnanchoredCount,
+                    Signed = s.Mac != null,
+
+                    // Entries written by 1.x carry sequence 0; counting them is an index range seek per table.
+                    Records = s.LastSequence + logs.Count(l => l.TableName == s.TableName && l.SequenceNumber == 0)
+                })
+                .ToListAsync(cancellationToken);
+        }
+
+        private sealed class HeadInfo
+        {
+            public required string TableName { get; init; }
+
+            public long LastSequence { get; init; }
+
+            public required string LastHash { get; init; }
+
+            public DateTime LastModified { get; init; }
+
+            public int UnanchoredCount { get; init; }
+
+            public bool Signed { get; init; }
+
+            public long Records { get; init; }
+        }
+
         public async Task<IResult> Logs(HttpContext http, CancellationToken cancellationToken)
         {
             var db = http.RequestServices.GetRequiredService<TContext>();
-            var query = ApplyFilters(db.AuditLogs(), http.Request.Query);
+            var query = http.Request.Query;
+            var filtered = ApplyFilters(db.AuditLogs(), query);
 
-            var pageSize = Math.Clamp(IntOf(http.Request.Query["pageSize"], 50), 1, Math.Max(1, _options.MaxPageSize));
-            var page = Math.Max(1, IntOf(http.Request.Query["page"], 1));
+            var pageSize = Math.Clamp(IntOf(query["pageSize"], 50), 1, Math.Max(1, _options.MaxPageSize));
+            var page = Math.Max(1, IntOf(query["page"], 1));
+            var oldestFirst = string.Equals(query["order"], "asc", StringComparison.OrdinalIgnoreCase);
 
-            var total = await query.CountAsync(cancellationToken);
-            var items = await query.Newest()
+            // Counting a whole unfiltered trail is a full scan; the chain heads know the answer for large trails.
+            long total;
+            var estimated = false;
+            if (OnlyTableFilter(query))
+            {
+                var table = ((string?)query["table"]).NullIfBlank();
+                var heads = await HeadsAsync(db, cancellationToken);
+                total = heads.Where(h => table is null || h.TableName == table).Sum(h => h.Records);
+                if (total <= ExactCountLimit)
+                {
+                    total = await filtered.LongCountAsync(cancellationToken);
+                }
+                else
+                {
+                    estimated = true;
+                }
+            }
+            else
+            {
+                total = await filtered.LongCountAsync(cancellationToken);
+            }
+
+            var ordered = oldestFirst
+                ? filtered.OrderBy(l => l.TimestampTicks).ThenBy(l => l.SequenceNumber)
+                : filtered.Newest();
+            var items = await ordered
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .Select(l => new LogDto(
                     l.Id, l.TableName, l.RecordId, l.ActionType, l.UserId, new DateTime(l.TimestampTicks, DateTimeKind.Utc),
-                    l.SequenceNumber, l.HashVersion, l.KeyId, l.PreviousHash, l.CurrentHash, l.OldValues, l.NewValues))
+                    l.SequenceNumber, l.HashVersion, l.KeyId, l.PreviousHash, l.CurrentHash, l.OldValues, l.NewValues, l.Metadata))
                 .ToListAsync(cancellationToken);
 
-            return Json(new { total, page, pageSize, items });
+            return Json(new { total, totalIsEstimate = estimated, page, pageSize, items });
         }
+
+        private static bool OnlyTableFilter(IQueryCollection query) =>
+            query.Keys.All(k => k is "table" or "page" or "pageSize" or "order")
+            || query.Where(p => p.Key is not ("table" or "page" or "pageSize" or "order")).All(p => string.IsNullOrWhiteSpace(p.Value));
 
         public static async Task<IResult> Activity(HttpContext http, CancellationToken cancellationToken)
         {
@@ -127,7 +203,8 @@ namespace EfCore.TamperEvident.AspNetCore
                     modified = Count(AuditActions.Modified),
                     deleted = Count(AuditActions.Deleted),
                     softDelete = Count(AuditActions.SoftDelete),
-                    restored = Count(AuditActions.Restored)
+                    restored = Count(AuditActions.Restored),
+                    redacted = Count(AuditActions.Redacted)
                 };
             }).ToList();
 
@@ -179,7 +256,14 @@ namespace EfCore.TamperEvident.AspNetCore
                     report = await VerifyEverythingAsync(http, db, verifier, pasted, cancellationToken);
                 }
 
-                StateOf(http).Update(report, "manual");
+                var state = StateOf(http);
+                state.Update(report, "manual");
+                if (table is null)
+                {
+                    // A full verification of every table is as good as a scheduled one: the next scheduled run can be incremental.
+                    state.RecordFullVerification(report);
+                }
+
                 return Json(ToDto(report, "manual"));
             }
             finally
@@ -365,25 +449,26 @@ namespace EfCore.TamperEvident.AspNetCore
 
         private static VerificationDto ToDto(AuditVerificationReport report, string source) => new(
             report.IsValid, report.Message, report.CompletedUtc, report.RecordsChecked, source,
+            report.Tables.Any(t => t.IsIncremental),
             report.Tables.Select(t => new TableResultDto(
-                t.TableName, t.IsValid, t.Failure.ToString(), t.Message, t.RecordsChecked, t.AnchorsMatched,
-                t.FailedRecordId, t.FailedSequence, t.HeadHash, t.HeadSequence, Math.Round(t.Duration.TotalMilliseconds, 1))).ToList());
+                t.TableName, t.IsValid, t.Failure.ToString(), t.Message, t.RecordsChecked, t.AnchorsMatched, t.RedactedRecords,
+                t.FailedRecordId, t.FailedSequence, t.HeadHash, t.HeadSequence, t.IsIncremental, Math.Round(t.Duration.TotalMilliseconds, 1))).ToList());
 
         internal sealed record VerifyRequest(string? Table, string? Anchors);
 
         private sealed record TableDto(
-            string Table, int Records, long LastSequence, string? HeadHash, DateTime? LastEntryUtc, int UnanchoredCount, bool HeadAuthenticated);
+            string Table, long Records, long LastSequence, string? HeadHash, DateTime? LastEntryUtc, int UnanchoredCount, bool HeadAuthenticated);
 
         private sealed record LogDto(
             Guid Id, string Table, string RecordId, string Action, string UserId, DateTime TimestampUtc, long Sequence, int HashVersion,
-            string? KeyId, string PreviousHash, string CurrentHash, string? OldValues, string? NewValues);
+            string? KeyId, string PreviousHash, string CurrentHash, string? OldValues, string? NewValues, string? Metadata);
 
         private sealed record VerificationDto(
-            bool IsValid, string Message, DateTimeOffset CompletedUtc, long RecordsChecked, string Source, List<TableResultDto> Tables);
+            bool IsValid, string Message, DateTimeOffset CompletedUtc, long RecordsChecked, string Source, bool Incremental, List<TableResultDto> Tables);
 
         private sealed record TableResultDto(
-            string? Table, bool IsValid, string Failure, string Message, long RecordsChecked, int AnchorsMatched,
-            Guid? FailedRecordId, long? FailedSequence, string? HeadHash, long HeadSequence, double DurationMs);
+            string? Table, bool IsValid, string Failure, string Message, long RecordsChecked, int AnchorsMatched, long RedactedRecords,
+            Guid? FailedRecordId, long? FailedSequence, string? HeadHash, long HeadSequence, bool Incremental, double DurationMs);
     }
 
     internal static class StringExtensions

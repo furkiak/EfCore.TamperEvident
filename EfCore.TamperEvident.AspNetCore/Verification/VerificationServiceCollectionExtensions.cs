@@ -32,6 +32,11 @@ namespace EfCore.TamperEvident.AspNetCore
                 throw new ArgumentException("The verification interval must be positive.", nameof(configure));
             }
 
+            if (options.FullVerificationInterval <= TimeSpan.Zero)
+            {
+                throw new ArgumentException("The full verification interval must be positive.", nameof(configure));
+            }
+
             services.Replace(ServiceDescriptor.Singleton(options));
             services.TryAddSingleton<AuditVerificationState>();
             services.AddTamperEvidentVerifier<TContext>();

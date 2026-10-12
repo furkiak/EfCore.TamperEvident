@@ -47,6 +47,9 @@ jobs:
       - name: Test ASP.NET Core package (net8.0, net9.0, net10.0)
         run: dotnet test EfCore.TamperEvident.AspNetCore.Tests --no-build --configuration Release --verbosity normal
 
+      - name: Test the command line tool (net8.0, net10.0)
+        run: dotnet test EfCore.TamperEvident.Cli.Tests --no-build --configuration Release --verbosity normal
+
   # The audit trail against real PostgreSQL, MySQL/MariaDB and SQL Server servers.
   databases:
     name: Databases (${{ matrix.mysql.name }})
@@ -102,7 +105,8 @@ jobs:
       - name: Run the provider conformance tests
         run: dotnet test EfCore.TamperEvident.IntegrationTests --configuration Release --verbosity normal
 
-  # Builds the NuGet packages so that packaging problems show up in pull requests.
+  # Builds the NuGet packages so that packaging problems show up in pull requests,
+  # and installs the command line tool from its package to make sure it runs.
   pack:
     name: Pack
     runs-on: ubuntu-latest
@@ -121,6 +125,14 @@ jobs:
         run: |
           dotnet pack EfCore.TamperEvident/EfCore.TamperEvident.csproj --configuration Release --output artifacts
           dotnet pack EfCore.TamperEvident.AspNetCore/EfCore.TamperEvident.AspNetCore.csproj --configuration Release --output artifacts
+          dotnet pack tools/EfCore.TamperEvident.Cli/EfCore.TamperEvident.Cli.csproj --configuration Release --output artifacts
+
+      - name: Install and run the command line tool
+        run: |
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -n1)"
+          dotnet tool install EfCore.TamperEvident.Cli --tool-path ./cli --add-source ./artifacts --version "$version"
+          ./cli/tamper-evident --version
+          test "$(./cli/tamper-evident keygen | base64 -d | wc -c)" -eq 48
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,6 +1,7 @@
 using EfCore.TamperEvident;
 using EfCore.TamperEvident.Configuration;
 using EfCore.TamperEvident.Extensions;
+using EfCore.TamperEvident.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace QuickStart;
@@ -30,6 +31,9 @@ public static class DemoData
             AwaitAnchorDelivery = true
         };
         var random = new Random(42);
+        string[] addresses = ["203.0.113.7", "198.51.100.23", "192.0.2.41", "203.0.113.150"];
+        options.MetadataProvider = _ => new Dictionary<string, object?> { ["ip"] = addresses[random.Next(addresses.Length)] };
+        string[] reasons = ["Customer called to update the account", "Annual credit review", "Data quality fix (ticket #4711)", "Requested by the account manager"];
 
         string[] people = ["alice", "bob", "carol", "dave"];
         string[] companies = ["Acme Corp", "Globex", "Initech", "Umbrella Ltd", "Hooli", "Stark Industries", "Wayne Enterprises", "Soylent"];
@@ -62,7 +66,7 @@ public static class DemoData
         {
             clock.Advance(TimeSpan.FromMinutes(random.Next(40, 280)));
             var user = people[random.Next(people.Length)];
-            using (AuditScope.Begin(user))
+            using (AuditScope.Begin(user, random.Next(3) == 0 ? reasons[random.Next(reasons.Length)] : null))
             {
                 var customer = customers[random.Next(customers.Count)];
                 switch (random.Next(10))
@@ -108,6 +112,18 @@ public static class DemoData
 
                 await db.SaveChangesAsync();
             }
+        }
+
+        // An erasure request: the personal data of one customer leaves the trail, the chain stays verifiable.
+        clock.Advance(TimeSpan.FromHours(3));
+        using (AuditScope.Begin("dpo@acme.example"))
+        {
+            await db.RedactAuditTrailAsync(customers[^1], new AuditRedactionRequest
+            {
+                Reason = "Erasure request #2026-014 (GDPR Art. 17)",
+                Properties = ["Name", "Email", "CardNumber"],
+                MetadataKeys = ["ip"]
+            });
         }
     }
 

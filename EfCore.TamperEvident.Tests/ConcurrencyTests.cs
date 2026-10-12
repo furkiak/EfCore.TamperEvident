@@ -41,6 +41,46 @@ namespace EfCore.TamperEvident.Tests
         }
 
         [Fact]
+        public async Task ManyDatabasesSharingOneModel_CanBeWrittenInParallel()
+        {
+            // The prepared audit commands are cached per model and shared by every context of that model, also across
+            // databases. Each execution must use its own command instance.
+            var harnesses = Enumerable.Range(0, 8).Select(_ => new Harness()).ToList();
+            try
+            {
+                await Task.WhenAll(harnesses.Select(harness => Task.Run(async () =>
+                {
+                    for (var round = 0; round < 25; round++)
+                    {
+                        await using var db = harness.CreateContext();
+                        db.Customers.Add(new Customer { Name = "c" + round });
+                        db.Documents.Add(new Document { Title = "d" + round });
+                        if (round % 2 == 0)
+                        {
+                            await db.SaveChangesAsync();
+                        }
+                        else
+                        {
+                            db.SaveChanges();
+                        }
+                    }
+                })));
+
+                foreach (var harness in harnesses)
+                {
+                    await using var db = harness.CreateContext();
+                    var report = await harness.CreateVerifier(db).VerifyAllAsync();
+                    Assert.True(report.IsValid, report.Message);
+                    Assert.Equal(50, report.RecordsChecked);
+                }
+            }
+            finally
+            {
+                harnesses.ForEach(h => h.Dispose());
+            }
+        }
+
+        [Fact]
         public async Task ParallelWriters_ProduceOneUnbrokenChain()
         {
             const int writers = 8;

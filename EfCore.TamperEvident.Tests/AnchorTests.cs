@@ -377,7 +377,8 @@ namespace EfCore.TamperEvident.Tests
         public async Task WebhookPublisher_PostsTheAnchor_WithAVerifiableSignature()
         {
             var handler = new CapturingHandler(HttpStatusCode.OK);
-            var publisher = new WebhookAnchorPublisher(new Uri("https://example.test/anchors"), "shared-signing-secret", new HttpClient(handler));
+            var clock = new TestClock(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero));
+            var publisher = new WebhookAnchorPublisher(new Uri("https://example.test/anchors"), "shared-signing-secret", new HttpClient(handler), clock);
             var anchor = new AuditAnchor("Customers", new string('c', 64), 42, 7, new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero));
 
             await publisher.PublishAsync(anchor);
@@ -387,9 +388,24 @@ namespace EfCore.TamperEvident.Tests
             Assert.Contains("\"hash\":\"" + new string('c', 64) + "\"", handler.Body);
             Assert.Contains("\"sequenceNumber\":42", handler.Body);
 
+            // t=<unix time>,v1=HMAC("<unix time>." + body)
+            var header = handler.Headers[WebhookAnchorPublisher.SignatureHeader];
             var expected = Convert.ToHexString(HMACSHA256.HashData(
-                Encoding.UTF8.GetBytes("shared-signing-secret"), Encoding.UTF8.GetBytes(handler.Body))).ToLowerInvariant();
-            Assert.Equal("sha256=" + expected, handler.Headers[WebhookAnchorPublisher.SignatureHeader]);
+                Encoding.UTF8.GetBytes("shared-signing-secret"), Encoding.UTF8.GetBytes("1767323045." + handler.Body))).ToLowerInvariant();
+            Assert.Equal("t=1767323045,v1=" + expected, header);
+
+            var body = Encoding.UTF8.GetBytes(handler.Body);
+            Assert.True(WebhookAnchorPublisher.VerifySignature(header, body, "shared-signing-secret", timeProvider: clock));
+            Assert.False(WebhookAnchorPublisher.VerifySignature(header, body, "another-secret", timeProvider: clock));
+            Assert.False(WebhookAnchorPublisher.VerifySignature(header, Encoding.UTF8.GetBytes(handler.Body.Replace("42", "43")), "shared-signing-secret", timeProvider: clock));
+            Assert.False(WebhookAnchorPublisher.VerifySignature(header.Replace("t=1767323045", "t=1767323046"), body, "shared-signing-secret", timeProvider: clock));
+            Assert.False(WebhookAnchorPublisher.VerifySignature(null, body, "shared-signing-secret"));
+            Assert.False(WebhookAnchorPublisher.VerifySignature("v1=abc", body, "shared-signing-secret"));
+
+            // A replay an hour later is refused.
+            clock.Advance(TimeSpan.FromHours(1));
+            Assert.False(WebhookAnchorPublisher.VerifySignature(header, body, "shared-signing-secret", timeProvider: clock));
+            Assert.True(WebhookAnchorPublisher.VerifySignature(header, body, "shared-signing-secret", TimeSpan.FromHours(2), clock));
         }
 
         [Fact]

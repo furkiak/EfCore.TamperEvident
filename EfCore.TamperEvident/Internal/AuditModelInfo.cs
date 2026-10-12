@@ -16,12 +16,14 @@ namespace EfCore.TamperEvident.Internal
     {
         private static readonly ConditionalWeakTable<IModel, AuditModelInfo> Cache = new();
 
-        private AuditModelInfo(DatabaseProvider requestedProvider, DatabaseProvider provider, bool isRelational, AuditSqlCommands? commands)
+        private AuditModelInfo(
+            DatabaseProvider requestedProvider, DatabaseProvider provider, bool isRelational, AuditSqlCommands? commands, AuditRelationalCommands? relational)
         {
             RequestedProvider = requestedProvider;
             Provider = provider;
             IsRelational = isRelational;
             Commands = commands;
+            Relational = relational;
         }
 
         public DatabaseProvider RequestedProvider { get; }
@@ -32,6 +34,9 @@ namespace EfCore.TamperEvident.Internal
 
         /// <summary>The SQL used to lock and create chain heads. <c>null</c> for non-relational providers.</summary>
         public AuditSqlCommands? Commands { get; }
+
+        /// <summary>The prepared commands of the hot path. <c>null</c> for non-relational providers.</summary>
+        public AuditRelationalCommands? Relational { get; }
 
         public static AuditModelInfo Resolve(DbContext context, TamperEvidentOptions options)
         {
@@ -69,8 +74,9 @@ namespace EfCore.TamperEvident.Internal
             }
 
             var commands = isRelational ? AuditSqlCommands.Build(context, provider) : null;
+            var relational = commands is null ? null : new AuditRelationalCommands(context, commands, provider);
 
-            var info = new AuditModelInfo(options.DbProvider, provider, isRelational, commands);
+            var info = new AuditModelInfo(options.DbProvider, provider, isRelational, commands, relational);
             Cache.AddOrUpdate(model, info);
             return info;
         }
@@ -125,7 +131,7 @@ namespace EfCore.TamperEvident.Internal
     /// </summary>
     internal sealed class AuditSqlCommands
     {
-        /// <summary>The audit log columns in the order of the parameters of <see cref="InsertLogs"/>.</summary>
+        /// <summary>The audit log columns in parameter order.</summary>
         private static readonly (string Property, Func<AuditLog, object?> Get)[] LogColumns =
         {
             (nameof(AuditLog.Id), l => l.Id),
@@ -134,6 +140,7 @@ namespace EfCore.TamperEvident.Internal
             (nameof(AuditLog.ActionType), l => l.ActionType),
             (nameof(AuditLog.OldValues), l => l.OldValues),
             (nameof(AuditLog.NewValues), l => l.NewValues),
+            (nameof(AuditLog.Metadata), l => l.Metadata),
             (nameof(AuditLog.UserId), l => l.UserId),
             (nameof(AuditLog.TimestampTicks), l => l.TimestampTicks),
             (nameof(AuditLog.SequenceNumber), l => l.SequenceNumber),
@@ -143,23 +150,30 @@ namespace EfCore.TamperEvident.Internal
             (nameof(AuditLog.CurrentHash), l => l.CurrentHash)
         };
 
-        private readonly string _insertLogsPrefix;
-        private readonly ConcurrentDictionary<int, string> _insertLogsByRowCount = new();
-
         private AuditSqlCommands(
-            string selectForUpdate, string insertIfMissing, string updateChainState, string insertLogsPrefix)
+            string selectHeadForUpdate, string insertIfMissing, string updateChainState, (string InsertLogsPrefix, string UpdateRedacted) logs)
         {
-            SelectForUpdate = selectForUpdate;
+            SelectHeadForUpdate = selectHeadForUpdate;
             InsertIfMissing = insertIfMissing;
             UpdateChainState = updateChainState;
-            _insertLogsPrefix = insertLogsPrefix;
+            InsertLogsPrefix = logs.InsertLogsPrefix;
+            UpdateRedacted = logs.UpdateRedacted;
         }
 
-        /// <summary>How many columns an audit entry has, which is how many parameters one row of <see cref="InsertLogs"/> takes.</summary>
-        public static int LogColumnCount => LogColumns.Length;
+        /// <summary>The audit log columns, in parameter order.</summary>
+        public static IReadOnlyList<string> LogColumnNames { get; } = LogColumns.Select(c => c.Property).ToArray();
 
-        /// <summary>Selects the chain head of the table passed as <c>{0}</c> and locks the row until the transaction ends.</summary>
-        public string SelectForUpdate { get; }
+        /// <summary>Reads the parameter values of one entry, in the order of <see cref="LogColumnNames"/>.</summary>
+        public static IReadOnlyList<Func<AuditLog, object?>> LogGetters { get; } = LogColumns.Select(c => c.Get).ToArray();
+
+        /// <summary><c>INSERT INTO AuditLogs (...) VALUES </c></summary>
+        public string InsertLogsPrefix { get; }
+
+        /// <summary>
+        /// Selects the chain head of the table passed as <c>{0}</c> and locks the row until the transaction ends. The columns
+        /// are table name, last hash, unanchored count, last sequence, key id and MAC.
+        /// </summary>
+        public string SelectHeadForUpdate { get; }
 
         /// <summary>
         /// Creates the chain head of the table passed as <c>{0}</c> unless it exists.
@@ -172,27 +186,10 @@ namespace EfCore.TamperEvident.Internal
         /// </summary>
         public string UpdateChainState { get; }
 
-        /// <summary>Appends <paramref name="rowCount"/> audit entries with one statement.</summary>
-        public string InsertLogs(int rowCount) => _insertLogsByRowCount.GetOrAdd(rowCount, rows =>
-        {
-            var rowSql = new List<string>(rows);
-            for (var row = 0; row < rows; row++)
-            {
-                var placeholders = Enumerable.Range(0, LogColumns.Length).Select(c => "{" + (row * LogColumns.Length + c) + "}");
-                rowSql.Add("(" + string.Join(", ", placeholders) + ")");
-            }
-
-            return _insertLogsPrefix + string.Join(", ", rowSql);
-        });
-
-        /// <summary>The parameter values of one audit entry, in the column order of <see cref="InsertLogs"/>.</summary>
-        public static void AddLogParameters(AuditLog log, object?[] target, int offset)
-        {
-            for (var i = 0; i < LogColumns.Length; i++)
-            {
-                target[offset + i] = LogColumns[i].Get(log);
-            }
-        }
+        /// <summary>
+        /// Replaces the values of a redacted entry. Parameters: record id, user id, old values, new values, metadata, entry id.
+        /// </summary>
+        public string UpdateRedacted { get; }
 
         public static AuditSqlCommands Build(DbContext context, DatabaseProvider provider)
         {
@@ -214,7 +211,11 @@ namespace EfCore.TamperEvident.Internal
                 chainColumns.Column(nameof(AuditChainState.LastSequence))
             });
             var values = "{0}, {1}, {2}, {3}, {4}";
-            var selectColumns = string.Join(", ", chain.GetProperties().Select(p => chainColumns.Column(p.Name)));
+            var selectColumns = string.Join(", ", new[]
+            {
+                nameof(AuditChainState.TableName), nameof(AuditChainState.LastHash), nameof(AuditChainState.UnanchoredCount),
+                nameof(AuditChainState.LastSequence), nameof(AuditChainState.KeyId), nameof(AuditChainState.Mac)
+            }.Select(chainColumns.Column));
 
             var update =
                 $"UPDATE {chainTable} SET " +
@@ -227,6 +228,15 @@ namespace EfCore.TamperEvident.Internal
                 $"WHERE {key} = {{6}}";
 
             var insertLogs = $"INSERT INTO {logColumns.Table} ({string.Join(", ", LogColumns.Select(c => logColumns.Column(c.Property)))}) VALUES ";
+            var updateRedacted =
+                $"UPDATE {logColumns.Table} SET " +
+                $"{logColumns.Column(nameof(AuditLog.RecordId))} = {{0}}, " +
+                $"{logColumns.Column(nameof(AuditLog.UserId))} = {{1}}, " +
+                $"{logColumns.Column(nameof(AuditLog.OldValues))} = {{2}}, " +
+                $"{logColumns.Column(nameof(AuditLog.NewValues))} = {{3}}, " +
+                $"{logColumns.Column(nameof(AuditLog.Metadata))} = {{4}} " +
+                $"WHERE {logColumns.Column(nameof(AuditLog.Id))} = {{5}}";
+            var logs = (insertLogs, updateRedacted);
 
             return provider switch
             {
@@ -239,23 +249,23 @@ namespace EfCore.TamperEvident.Internal
                     $"INSERT INTO {chainTable} ({written}) SELECT {values} " +
                     $"WHERE NOT EXISTS (SELECT 1 FROM {chainTable} WITH (UPDLOCK, HOLDLOCK) WHERE {key} = {{0}}) " +
                     $"END TRY BEGIN CATCH IF ERROR_NUMBER() NOT IN (2601, 2627) THROW; END CATCH",
-                    update, insertLogs),
+                    update, logs),
 
                 DatabaseProvider.PostgreSql => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
                     $"INSERT INTO {chainTable} ({written}) VALUES ({values}) ON CONFLICT ({key}) DO NOTHING",
-                    update, insertLogs),
+                    update, logs),
 
                 DatabaseProvider.MySql => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}} FOR UPDATE",
                     $"INSERT IGNORE INTO {chainTable} ({written}) VALUES ({values})",
-                    update, insertLogs),
+                    update, logs),
 
                 // SQLite has a single writer: the transaction that already wrote the audited rows owns the database lock.
                 DatabaseProvider.Sqlite => new AuditSqlCommands(
                     $"SELECT {selectColumns} FROM {chainTable} WHERE {key} = {{0}}",
                     $"INSERT OR IGNORE INTO {chainTable} ({written}) VALUES ({values})",
-                    update, insertLogs),
+                    update, logs),
 
                 _ => throw new NotSupportedException($"The database provider {provider} is not supported for relational databases.")
             };

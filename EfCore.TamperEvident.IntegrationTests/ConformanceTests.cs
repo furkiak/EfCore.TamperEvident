@@ -366,6 +366,134 @@ namespace EfCore.TamperEvident.IntegrationTests
             Assert.True(result.IsValid, result.Message);
         }
 
+        [SkippableFact]
+        public async Task LargeSaveOfSeveralTables_IsWrittenInFewCommands()
+        {
+            // More rows than fit into one command for every provider, two tables: the head updates ride on the last command.
+            await using var database = await OpenAsync();
+            await using (var db = database.CreateContext())
+            {
+                db.Accounts.AddRange(Enumerable.Range(0, 450).Select(i => new Account { Name = "a" + i }));
+                db.Tickets.AddRange(Enumerable.Range(0, 230).Select(i => new Ticket { Title = "t" + i }));
+                await db.SaveChangesAsync();
+            }
+
+            await using var verify = database.CreateContext();
+            var report = await VerifierFor(verify, database).VerifyAllAsync();
+            Assert.True(report.IsValid, report.Message);
+            Assert.Equal(680, report.RecordsChecked);
+        }
+
+        [SkippableFact]
+        public async Task MetadataAndReasons_AreSealed()
+        {
+            await using var database = await OpenAsync(configure: o => o.MetadataProvider = _ => new Dictionary<string, object?> { ["ip"] = "203.0.113.7" });
+            await using (var db = database.CreateContext())
+            using (AuditScope.Begin("auditor", "Ticket #42 — çözüldü"))
+            {
+                db.Accounts.Add(new Account { Name = "meta" });
+                await db.SaveChangesAsync();
+            }
+
+            await using (var verify = database.CreateContext())
+            {
+                var log = await verify.Set<AuditLog>().SingleAsync();
+                Assert.Equal("{\"ip\":\"203.0.113.7\",\"reason\":\"Ticket #42 — çözüldü\"}", log.Metadata);
+                Assert.True((await VerifierFor(verify, database).VerifyTableIntegrityAsync("Accounts")).IsValid);
+            }
+
+            await using (var attacker = database.CreateUnauditedContext())
+            {
+                var log = await attacker.Set<AuditLog>().SingleAsync();
+                log.Metadata = log.Metadata!.Replace("42", "43");
+                await attacker.SaveChangesAsync();
+            }
+
+            await using var tampered = database.CreateContext();
+            Assert.Equal(AuditFailureKind.DataManipulated, (await VerifierFor(tampered, database).VerifyTableIntegrityAsync("Accounts")).Failure);
+        }
+
+        [SkippableFact]
+        public async Task Redaction_KeepsTheChainValid()
+        {
+            await using var database = await OpenAsync();
+            await using (var db = database.CreateContext())
+            {
+                var account = new Account { Name = "Ayşe Yılmaz", Balance = 10 };
+                db.Accounts.Add(account);
+                await db.SaveChangesAsync();
+                account.Name = "Ayşe Demir";
+                await db.SaveChangesAsync();
+
+                var result = await db.RedactAuditTrailAsync(account, new AuditRedactionRequest
+                {
+                    Reason = "GDPR Art. 17",
+                    Properties = new[] { "Name" },
+                    RedactRecordId = true
+                });
+                Assert.Equal(2, result.EntriesRedacted);
+            }
+
+            await using var verify = database.CreateContext();
+            var logs = await verify.Set<AuditLog>().OrderBy(l => l.SequenceNumber).ToListAsync();
+            Assert.Equal(new[] { "Added", "Modified", "Redacted" }, logs.Select(l => l.ActionType));
+            Assert.DoesNotContain("Ayşe", string.Concat(logs.Select(l => l.OldValues + l.NewValues + l.RecordId)));
+            var verification = await VerifierFor(verify, database).VerifyTableIntegrityAsync("Accounts");
+            Assert.True(verification.IsValid, verification.Message);
+            Assert.Equal(2, verification.RedactedRecords);
+        }
+
+        [SkippableFact]
+        public async Task IncrementalVerification_ReadsOnlyNewEntries()
+        {
+            await using var database = await OpenAsync();
+            await SeedOnceAsync(database);
+            await SeedOnceAsync(database);
+            AuditCheckpoint checkpoint;
+            await using (var verify = database.CreateContext())
+            {
+                checkpoint = (await VerifierFor(verify, database).VerifyTableIntegrityAsync("Accounts")).Checkpoint!;
+            }
+
+            await SeedOnceAsync(database);
+            await using (var verify = database.CreateContext())
+            {
+                var result = await VerifierFor(verify, database).VerifyFromCheckpointAsync(checkpoint);
+                Assert.True(result.IsValid, result.Message);
+                Assert.Equal(1, result.RecordsChecked);
+            }
+
+            await using (var attacker = database.CreateUnauditedContext())
+            {
+                (await attacker.Set<AuditLog>().SingleAsync(l => l.SequenceNumber == 3)).UserId = "mallory";
+                await attacker.SaveChangesAsync();
+            }
+
+            await using (var verify = database.CreateContext())
+            {
+                Assert.Equal(AuditFailureKind.DataManipulated, (await VerifierFor(verify, database).VerifyFromCheckpointAsync(checkpoint)).Failure);
+            }
+        }
+
+        [SkippableFact]
+        public async Task EvidenceBundles_VerifyOffline()
+        {
+            await using var database = await OpenAsync();
+            await SeedOnceAsync(database);
+            await SeedOnceAsync(database);
+
+            using var bundle = new MemoryStream();
+            await using (var db = database.CreateContext())
+            {
+                await AuditExporter.WriteEvidenceBundleAsync(bundle, db, VerifierFor(db, database));
+            }
+
+            bundle.Position = 0;
+            var report = await AuditEvidence.VerifyBundleAsync(bundle, database.Options);
+            Assert.True(report.IsValid, report.Message);
+            Assert.Equal(2, report.RecordsChecked);
+        }
+
         private async Task SeedOnceAsync(Database database)
         {
             await using var db = database.CreateContext();
