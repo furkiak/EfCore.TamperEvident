@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-10-12
+
+### Fixed
+
+- `WebhookAnchorPublisher.VerifySignature` threw `ArgumentOutOfRangeException` for a signature header whose timestamp lies
+  beyond `DateTimeOffset.MaxValue` (for example `t=99999999999999`) instead of returning `false`. The header comes from the
+  sender, so a forged request could turn into an unhandled exception (an HTTP 500) at the receiving endpoint. Such headers
+  are now rejected like any other invalid signature.
+
 ## [2.0.0] - 2026-10-12
 
 2.0 is a **major** release: it fixes several serious defects of 1.x, which required a schema change and a few API changes,

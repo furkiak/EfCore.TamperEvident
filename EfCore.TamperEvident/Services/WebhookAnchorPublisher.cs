@@ -21,6 +21,7 @@ namespace EfCore.TamperEvident.Services
         public const string SignatureHeader = "X-TamperEvident-Signature";
 
         private static readonly HttpClient SharedClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+        private static readonly long MaxUnixSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
 
         private readonly Uri _url;
         private readonly HttpClient _client;
@@ -102,8 +103,9 @@ namespace EfCore.TamperEvident.Services
                 }
             }
 
+            // The header is attacker-controlled: a time beyond DateTimeOffset.MaxValue is a forgery, not an exception.
             Span<byte> provided = stackalloc byte[32];
-            if (timestamp is null || signature is null || !Hex.TryDecode(signature.AsSpan(), provided))
+            if (timestamp is null || timestamp > MaxUnixSeconds || signature is null || !Hex.TryDecode(signature.AsSpan(), provided))
             {
                 return false;
             }

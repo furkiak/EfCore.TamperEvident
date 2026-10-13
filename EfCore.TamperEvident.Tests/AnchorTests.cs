@@ -408,6 +408,17 @@ namespace EfCore.TamperEvident.Tests
             Assert.True(WebhookAnchorPublisher.VerifySignature(header, body, "shared-signing-secret", TimeSpan.FromHours(2), clock));
         }
 
+        [Theory]
+        [InlineData("t=99999999999999,v1=")]
+        [InlineData("t=253402300800,v1=")]
+        [InlineData("t=9223372036854775807,v1=")]
+        public void WebhookSignature_WithAnOutOfRangeTimestamp_IsRejected_NotThrown(string prefix)
+        {
+            // An attacker controls the header: a timestamp beyond DateTimeOffset.MaxValue must not turn into a 500.
+            var header = prefix + new string('a', 64);
+            Assert.False(WebhookAnchorPublisher.VerifySignature(header, "{}"u8, "shared-signing-secret"));
+        }
+
         [Fact]
         public async Task WebhookPublisher_ThrowsOnErrorStatus_SoThatTheDispatcherRetries()
         {
