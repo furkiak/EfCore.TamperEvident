@@ -42,7 +42,7 @@
   -->
   <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0'">
     <EfCoreMinVersion>8.0.11</EfCoreMinVersion>
-    <EfCoreTestVersion>8.0.31</EfCoreTestVersion>
+    <EfCoreTestVersion>9.0.21</EfCoreTestVersion>
   </PropertyGroup>
   <PropertyGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <EfCoreMinVersion>9.0.0</EfCoreMinVersion>
